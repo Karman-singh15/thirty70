@@ -1,36 +1,87 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Thirty70 — Collaborative LeetCode
 
-## Getting Started
+Solve LeetCode problems together with friends in real-time. Create private rooms, share invite links, search problems via LeetCode's GraphQL API, and collaborate in a shared code editor.
 
-First, run the development server:
+## Features
+
+- **Clerk authentication** — Sign up / sign in with email, Google, etc.
+- **Personal rooms** — Create rooms and share invite links with friends
+- **LeetCode search** — Search and load problems via LeetCode GraphQL API
+- **Collaborative editor** — Monaco editor with live code sync between participants
+- **Split-pane UI** — Problem description on the left, code editor on the right
+
+## Setup
+
+### 1. Install dependencies
+
+```bash
+npm install
+```
+
+### 2. Configure Clerk
+
+1. Create an app at [clerk.com](https://clerk.com)
+2. Copy `.env.local.example` to `.env.local`
+3. Add your Clerk keys:
+
+```bash
+cp .env.local.example .env.local
+```
+
+```env
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
+```
+
+### 3. Run the dev server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Usage
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. **Sign up** on the landing page
+2. **Create a room** from the dashboard
+3. **Copy the invite link** and share it with friends
+4. **Search for a LeetCode problem** in the room
+5. **Code together** — changes sync automatically between participants
 
-## Learn More
+## Architecture
 
-To learn more about Next.js, take a look at the following resources:
+| Layer | Tech |
+|-------|------|
+| Auth | Clerk (`@clerk/nextjs`) |
+| Frontend | Next.js 16 App Router, Tailwind CSS |
+| Editor | Monaco Editor |
+| LeetCode data | LeetCode GraphQL API (proxied via `/api/leetcode/*`) |
+| Room state | In-memory store (dev/demo — swap for a DB in production) |
+| Sync | Polling every 1.5s via `/api/rooms/[id]/sync` |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Production notes
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Room persistence**: Rooms are stored in memory and reset on server restart. For production, replace `lib/rooms.ts` with a database (Postgres, Redis, etc.).
+- **Real-time sync**: Current polling works for small groups. For lower latency, consider WebSockets (PartyKit, Liveblocks, or Socket.io).
+- **LeetCode premium**: Only free problems can be loaded. Premium problems are marked and disabled in search results.
 
-## Deploy on Vercel
+## Project structure
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+app/
+  page.tsx              Landing page
+  dashboard/page.tsx    Room list
+  room/[id]/page.tsx    Collaborative room
+  join/[code]/page.tsx  Invite link handler
+  sign-in/              Clerk sign in
+  sign-up/              Clerk sign up
+  api/
+    leetcode/           LeetCode GraphQL proxy
+    rooms/              Room CRUD + sync
+components/             UI components
+lib/
+  leetcode.ts           GraphQL queries
+  rooms.ts              Room store
+proxy.ts                Clerk middleware (Next.js 16)
+```
