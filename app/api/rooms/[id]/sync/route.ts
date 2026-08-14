@@ -1,6 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { getRoom, setRoomProblem, updateRoomCode } from "@/lib/rooms";
+import { touchPresence } from "@/lib/roomState";
 
 export async function GET(
   _req: NextRequest,
@@ -12,7 +13,7 @@ export async function GET(
   }
 
   const { id } = await params;
-  const room = getRoom(id);
+  const room = await getRoom(id);
 
   if (!room) {
     return NextResponse.json({ error: "Room not found" }, { status: 404 });
@@ -22,12 +23,19 @@ export async function GET(
     return NextResponse.json({ error: "Not a member" }, { status: 403 });
   }
 
+  await touchPresence(id, userId);
+
   return NextResponse.json({
     code: room.code,
     language: room.language,
     problem: room.problem,
     participants: room.participants,
     updatedAt: room.updatedAt,
+    turnDurationSeconds: room.turnDurationSeconds,
+    turnOrder: room.turnOrder,
+    currentTurnUserId: room.currentTurnUserId,
+    turnNumber: room.turnNumber,
+    turnEndsAt: room.turnEndsAt,
   });
 }
 
@@ -44,17 +52,26 @@ export async function PATCH(
   const body = await req.json();
 
   if (body.problem) {
-    const room = setRoomProblem(id, body.problem);
+    const room = await setRoomProblem(
+      id,
+      userId,
+      body.problem,
+      typeof body.code === "string" ? body.code : "",
+      body.language ?? "javascript"
+    );
     if (!room) {
-      return NextResponse.json({ error: "Room not found" }, { status: 404 });
+      return NextResponse.json({ error: "Room not found or not the host" }, { status: 403 });
     }
     return NextResponse.json({ room });
   }
 
   if (typeof body.code === "string") {
-    const room = updateRoomCode(id, body.code, body.language ?? "javascript", userId);
-    if (!room) {
-      return NextResponse.json({ error: "Room not found or not a member" }, { status: 404 });
+    const result = await updateRoomCode(id, body.code, body.language ?? "javascript", userId);
+    if (result === "not_member") {
+      return NextResponse.json({ error: "Not a member" }, { status: 404 });
+    }
+    if (result === "not_your_turn") {
+      return NextResponse.json({ error: "Not your turn" }, { status: 403 });
     }
     return NextResponse.json({ ok: true });
   }

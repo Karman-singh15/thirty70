@@ -20,12 +20,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invite code required" }, { status: 400 });
   }
 
-  const found = getRoomByInviteCode(inviteCode);
+  const found = await getRoomByInviteCode(inviteCode);
   if (!found) {
     return NextResponse.json({ error: "Invalid invite code" }, { status: 404 });
   }
 
-  const room = joinRoom(
+  const room = await joinRoom(
     found.id,
     userId,
     user.fullName ?? user.username ?? "Anonymous",

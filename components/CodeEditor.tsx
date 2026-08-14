@@ -50,7 +50,8 @@ export function CodeEditor({
         <select
           value={language}
           onChange={(e) => onLanguageChange(e.target.value)}
-          className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 focus:outline-none"
+          disabled={readOnly}
+          className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 focus:outline-none disabled:opacity-50"
         >
           {LANGUAGES.map((lang) => (
             <option key={lang.value} value={lang.value}>
@@ -59,7 +60,7 @@ export function CodeEditor({
           ))}
         </select>
         <span className="text-xs text-zinc-500">
-          {readOnly ? "Syncing..." : "Collaborative editing enabled"}
+          {readOnly ? "Waiting for your turn..." : "It's your turn — go ahead"}
         </span>
       </div>
       <div className="flex-1">

@@ -1,0 +1,1 @@
+ALTER TABLE "rooms" ADD COLUMN "turn_duration_seconds" integer DEFAULT 120 NOT NULL;

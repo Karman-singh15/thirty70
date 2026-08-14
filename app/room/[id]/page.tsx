@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useAuth } from "@clerk/nextjs";
 import { ArrowLeft } from "lucide-react";
 import { Header } from "@/components/Header";
 import { InviteLink } from "@/components/InviteLink";
@@ -9,9 +10,11 @@ import { ProblemSearch } from "@/components/ProblemSearch";
 import { ProblemPanel } from "@/components/ProblemPanel";
 import { CodeEditor } from "@/components/CodeEditor";
 import { ParticipantsList } from "@/components/ParticipantsList";
+import { TurnBar } from "@/components/TurnBar";
 
 interface RoomData {
   id: string;
+  ownerId: string;
   name: string;
   inviteCode: string;
   participants: { userId: string; name: string; imageUrl: string }[];
@@ -23,6 +26,10 @@ interface RoomData {
   } | null;
   code: string;
   language: string;
+  turnDurationSeconds: number;
+  currentTurnUserId: string | null;
+  turnNumber: number;
+  turnEndsAt: number | null;
 }
 
 interface ProblemDetail {
@@ -46,6 +53,7 @@ const LANG_MAP: Record<string, string> = {
 };
 
 export default function RoomPage({ params }: { params: Promise<{ id: string }> }) {
+  const { userId: myUserId } = useAuth();
   const [roomId, setRoomId] = useState<string>("");
   const [room, setRoom] = useState<RoomData | null>(null);
   const [problemDetail, setProblemDetail] = useState<ProblemDetail | null>(null);
@@ -94,6 +102,10 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             problem: data.problem,
             code: data.code,
             language: data.language,
+            turnDurationSeconds: data.turnDurationSeconds,
+            currentTurnUserId: data.currentTurnUserId,
+            turnNumber: data.turnNumber,
+            turnEndsAt: data.turnEndsAt,
           }
         : prev
     );
@@ -142,6 +154,8 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       detail?.codeSnippets?.[0]?.code ??
       "";
 
+    // Problem + starter code are set atomically so the first turn starts
+    // with real code already in place, before turn-gating applies.
     await fetch(`/api/rooms/${roomId}/sync`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -152,16 +166,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           difficulty: problem.difficulty,
           frontendQuestionId: problem.frontendQuestionId,
         },
+        code: starterCode,
+        language,
       }),
     });
 
     setCode(starterCode);
-    await fetch(`/api/rooms/${roomId}/sync`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: starterCode, language }),
-    });
-
     fetchRoom();
   }
 
@@ -171,13 +181,19 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      await fetch(`/api/rooms/${roomId}/sync`, {
+      const res = await fetch(`/api/rooms/${roomId}/sync`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: newCode, language }),
       });
-      lastUpdatedAt.current = Date.now();
       isLocalEdit.current = false;
+
+      if (res.ok) {
+        lastUpdatedAt.current = Date.now();
+      } else {
+        // Rejected (e.g. turn moved on mid-edit) — pull the real state back.
+        syncState();
+      }
     }, 500);
   }
 
@@ -191,6 +207,22 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     }
   }
 
+  async function handlePassTurn() {
+    if (!roomId) return;
+    await fetch(`/api/rooms/${roomId}/turn`, { method: "POST" });
+    syncState();
+  }
+
+  async function handleSetTurnDuration(seconds: number) {
+    if (!roomId) return;
+    await fetch(`/api/rooms/${roomId}/turn`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ turnDurationSeconds: seconds }),
+    });
+    syncState();
+  }
+
   if (!room) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-400">
@@ -198,6 +230,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       </div>
     );
   }
+
+  const isOwner = !!myUserId && room.ownerId === myUserId;
+  // Mirrors the server: no active turn yet means anyone can edit; once a
+  // turn is assigned, only its holder can.
+  const readOnly = room.currentTurnUserId !== null && room.currentTurnUserId !== myUserId;
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950">
@@ -220,10 +257,27 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         <InviteLink inviteCode={room.inviteCode} />
       </div>
 
+      <TurnBar
+        participants={room.participants}
+        currentTurnUserId={room.currentTurnUserId}
+        turnNumber={room.turnNumber}
+        turnEndsAt={room.turnEndsAt}
+        turnDurationSeconds={room.turnDurationSeconds}
+        myUserId={myUserId ?? null}
+        isOwner={isOwner}
+        hasProblem={!!room.problem}
+        onPass={handlePassTurn}
+        onChangeDuration={handleSetTurnDuration}
+      />
+
       <div className="flex flex-1 overflow-hidden border-t border-zinc-800">
         <div className="flex w-[45%] flex-col border-r border-zinc-800">
           <div className="border-b border-zinc-800 p-3">
-            <ProblemSearch onSelect={handleProblemSelect} />
+            {isOwner ? (
+              <ProblemSearch onSelect={handleProblemSelect} />
+            ) : (
+              <p className="text-xs text-zinc-500">Only the host can pick a problem.</p>
+            )}
           </div>
           <div className="flex-1 overflow-hidden">
             <ProblemPanel problem={problemDetail} loading={problemLoading} />
@@ -236,6 +290,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             language={language}
             onChange={handleCodeChange}
             onLanguageChange={handleLanguageChange}
+            readOnly={readOnly}
           />
         </div>
       </div>

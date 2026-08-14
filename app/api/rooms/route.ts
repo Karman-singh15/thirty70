@@ -8,7 +8,8 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const rooms = getRoomsForUser(userId).map((r) => ({
+  const userRooms = await getRoomsForUser(userId);
+  const rooms = userRooms.map((r) => ({
     id: r.id,
     name: r.name,
     ownerName: r.ownerName,
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const name = (body.name as string)?.trim() || "Untitled Room";
 
-  const room = createRoom(
+  const room = await createRoom(
     name,
     userId,
     user.fullName ?? user.username ?? "Anonymous",
