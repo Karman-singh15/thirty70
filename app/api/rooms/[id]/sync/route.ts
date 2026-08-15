@@ -1,7 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { getRoom, setRoomProblem, updateRoomCode } from "@/lib/rooms";
-import { touchPresence } from "@/lib/roomState";
+import { getMediaState, getOnlineUserIds, touchPresence } from "@/lib/roomState";
 
 export async function GET(
   _req: NextRequest,
@@ -13,7 +13,11 @@ export async function GET(
   }
 
   const { id } = await params;
-  const room = await getRoom(id);
+  const [room, onlineUserIds, media] = await Promise.all([
+    getRoom(id),
+    getOnlineUserIds(id),
+    getMediaState(id),
+  ]);
 
   if (!room) {
     return NextResponse.json({ error: "Room not found" }, { status: 404 });
@@ -36,6 +40,10 @@ export async function GET(
     currentTurnUserId: room.currentTurnUserId,
     turnNumber: room.turnNumber,
     turnEndsAt: room.turnEndsAt,
+    turnPausedRemainingMs: room.turnPausedRemainingMs,
+    onlineUserIds,
+    micOn: media.micOn,
+    cameraOn: media.cameraOn,
   });
 }
 

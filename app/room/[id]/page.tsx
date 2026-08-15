@@ -1,16 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
-import { ArrowLeft } from "lucide-react";
 import { Header } from "@/components/Header";
-import { InviteLink } from "@/components/InviteLink";
+import { RoomHeader } from "@/components/RoomHeader";
 import { ProblemSearch } from "@/components/ProblemSearch";
 import { ProblemPanel } from "@/components/ProblemPanel";
 import { CodeEditor } from "@/components/CodeEditor";
-import { ParticipantsList } from "@/components/ParticipantsList";
 import { TurnBar } from "@/components/TurnBar";
+import { ParticipantsPanel } from "@/components/ParticipantsPanel";
+import { ResizeHandle } from "@/components/ResizeHandle";
+import { useLocalMedia } from "@/hooks/useLocalMedia";
+
+const MIN_PROBLEM_WIDTH = 280;
+const MAX_PROBLEM_WIDTH = 800;
+const MIN_EDITOR_WIDTH = 360;
+const MIN_PARTICIPANTS_WIDTH = 220;
+const MAX_PARTICIPANTS_WIDTH = 520;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
 
 interface RoomData {
   id: string;
@@ -30,6 +40,10 @@ interface RoomData {
   currentTurnUserId: string | null;
   turnNumber: number;
   turnEndsAt: number | null;
+  turnPausedRemainingMs: number | null;
+  onlineUserIds: string[];
+  micOn: string[];
+  cameraOn: string[];
 }
 
 interface ProblemDetail {
@@ -63,6 +77,25 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const lastUpdatedAt = useRef(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isLocalEdit = useRef(false);
+  const [problemWidth, setProblemWidth] = useState(420);
+  const [participantsWidth, setParticipantsWidth] = useState(320);
+  const mainRowRef = useRef<HTMLDivElement | null>(null);
+  const widthsInitialized = useRef(false);
+
+  // Seed the panel widths from the room's actual size on first render
+  // (roughly the old 70/30, 45%-of-70% split), then leave them alone —
+  // from here on out, sizing is entirely up to the user dragging the handles.
+  useEffect(() => {
+    if (widthsInitialized.current || !room || !mainRowRef.current) return;
+    const totalWidth = mainRowRef.current.clientWidth;
+    if (totalWidth > 0) {
+      setProblemWidth(clamp(Math.round(totalWidth * 0.7 * 0.45), MIN_PROBLEM_WIDTH, MAX_PROBLEM_WIDTH));
+      setParticipantsWidth(
+        clamp(Math.round(totalWidth * 0.3), MIN_PARTICIPANTS_WIDTH, MAX_PARTICIPANTS_WIDTH)
+      );
+    }
+    widthsInitialized.current = true;
+  }, [room]);
 
   useEffect(() => {
     params.then((p) => setRoomId(p.id));
@@ -73,7 +106,13 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     const res = await fetch(`/api/rooms/${roomId}`);
     if (res.ok) {
       const { room: r } = await res.json();
-      setRoom(r);
+      setRoom((prev) => ({
+        onlineUserIds: [],
+        micOn: [],
+        cameraOn: [],
+        ...prev,
+        ...r,
+      }));
       if (!isLocalEdit.current) {
         setCode(r.code);
         setLanguage(r.language);
@@ -106,6 +145,10 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             currentTurnUserId: data.currentTurnUserId,
             turnNumber: data.turnNumber,
             turnEndsAt: data.turnEndsAt,
+            turnPausedRemainingMs: data.turnPausedRemainingMs,
+            onlineUserIds: data.onlineUserIds,
+            micOn: data.micOn,
+            cameraOn: data.cameraOn,
           }
         : prev
     );
@@ -207,21 +250,86 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     }
   }
 
+  // The turn endpoints already return the fresh room in their response —
+  // apply it directly instead of following up with a whole separate /sync
+  // round trip (which used to double the wait on every pass/duration/pause
+  // change). Only fall back to a resync if the request itself failed.
+  function applyRoomUpdate(r: Partial<RoomData>) {
+    setRoom((prev) => (prev ? { ...prev, ...r } : prev));
+  }
+
   async function handlePassTurn() {
     if (!roomId) return;
-    await fetch(`/api/rooms/${roomId}/turn`, { method: "POST" });
-    syncState();
+    const res = await fetch(`/api/rooms/${roomId}/turn`, { method: "POST" });
+    if (res.ok) {
+      const { room: r } = await res.json();
+      applyRoomUpdate(r);
+    } else {
+      syncState();
+    }
   }
 
   async function handleSetTurnDuration(seconds: number) {
     if (!roomId) return;
-    await fetch(`/api/rooms/${roomId}/turn`, {
+    const res = await fetch(`/api/rooms/${roomId}/turn`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ turnDurationSeconds: seconds }),
     });
-    syncState();
+    if (res.ok) {
+      const { room: r } = await res.json();
+      applyRoomUpdate(r);
+    } else {
+      syncState();
+    }
   }
+
+  async function handleTogglePause(paused: boolean) {
+    if (!roomId) return;
+    const res = await fetch(`/api/rooms/${roomId}/turn`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused }),
+    });
+    if (res.ok) {
+      const { room: r } = await res.json();
+      applyRoomUpdate(r);
+    } else {
+      syncState();
+    }
+  }
+
+  const reportMediaChange = useCallback(
+    (kind: "mic" | "camera", on: boolean) => {
+      if (!roomId) return;
+      setRoom((prev) => {
+        if (!prev || !myUserId) return prev;
+        const key = kind === "mic" ? "micOn" : "cameraOn";
+        const set = new Set(prev[key]);
+        if (on) set.add(myUserId);
+        else set.delete(myUserId);
+        return { ...prev, [key]: Array.from(set) };
+      });
+      fetch(`/api/rooms/${roomId}/media`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [kind]: on }),
+      });
+    },
+    [roomId, myUserId]
+  );
+
+  const {
+    micOn: myMicOn,
+    cameraOn: myCameraOn,
+    cameraStream: myCameraStream,
+    error: mediaError,
+    toggleMic,
+    toggleCamera,
+  } = useLocalMedia(
+    (on) => reportMediaChange("mic", on),
+    (on) => reportMediaChange("camera", on)
+  );
 
   if (!room) {
     return (
@@ -240,38 +348,37 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     <div className="flex h-screen flex-col bg-zinc-950">
       <Header />
 
-      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/dashboard"
-            className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <h1 className="text-sm font-medium text-zinc-200">{room.name}</h1>
-        </div>
-        <ParticipantsList participants={room.participants} />
-      </div>
-
-      <div className="px-4 py-2">
-        <InviteLink inviteCode={room.inviteCode} />
-      </div>
+      <RoomHeader
+        roomName={room.name}
+        inviteCode={room.inviteCode}
+        participants={room.participants}
+        onlineUserIds={room.onlineUserIds}
+        micOn={room.micOn}
+        cameraOn={room.cameraOn}
+        myMicOn={myMicOn}
+        myCameraOn={myCameraOn}
+        mediaError={mediaError}
+        onToggleMic={toggleMic}
+        onToggleCamera={toggleCamera}
+      />
 
       <TurnBar
         participants={room.participants}
         currentTurnUserId={room.currentTurnUserId}
         turnNumber={room.turnNumber}
         turnEndsAt={room.turnEndsAt}
+        turnPausedRemainingMs={room.turnPausedRemainingMs}
         turnDurationSeconds={room.turnDurationSeconds}
         myUserId={myUserId ?? null}
         isOwner={isOwner}
         hasProblem={!!room.problem}
         onPass={handlePassTurn}
         onChangeDuration={handleSetTurnDuration}
+        onTogglePause={handleTogglePause}
       />
 
-      <div className="flex flex-1 overflow-hidden border-t border-zinc-800">
-        <div className="flex w-[45%] flex-col border-r border-zinc-800">
+      <div ref={mainRowRef} className="flex flex-1 overflow-hidden border-t border-zinc-800">
+        <div className="flex shrink-0 flex-col" style={{ width: problemWidth }}>
           <div className="border-b border-zinc-800 p-3">
             {isOwner ? (
               <ProblemSearch onSelect={handleProblemSelect} />
@@ -284,13 +391,38 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           </div>
         </div>
 
-        <div className="flex-1">
+        <ResizeHandle
+          onResize={(deltaX) =>
+            setProblemWidth((w) => clamp(w + deltaX, MIN_PROBLEM_WIDTH, MAX_PROBLEM_WIDTH))
+          }
+        />
+
+        <div className="flex-1 overflow-hidden" style={{ minWidth: MIN_EDITOR_WIDTH }}>
           <CodeEditor
             code={code}
             language={language}
             onChange={handleCodeChange}
             onLanguageChange={handleLanguageChange}
             readOnly={readOnly}
+          />
+        </div>
+
+        <ResizeHandle
+          onResize={(deltaX) =>
+            setParticipantsWidth((w) =>
+              clamp(w - deltaX, MIN_PARTICIPANTS_WIDTH, MAX_PARTICIPANTS_WIDTH)
+            )
+          }
+        />
+
+        <div className="shrink-0 border-l border-zinc-800" style={{ width: participantsWidth }}>
+          <ParticipantsPanel
+            participants={room.participants}
+            onlineUserIds={room.onlineUserIds}
+            micOn={room.micOn}
+            cameraOn={room.cameraOn}
+            myUserId={myUserId ?? null}
+            myCameraStream={myCameraStream}
           />
         </div>
       </div>

@@ -33,6 +33,7 @@ export interface Room {
   currentTurnUserId: string | null;
   turnNumber: number;
   turnEndsAt: number | null;
+  turnPausedRemainingMs: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -149,6 +150,7 @@ export async function getRoom(id: string): Promise<Room | undefined> {
     currentTurnUserId: liveState.currentTurnUserId,
     turnNumber: liveState.turnNumber,
     turnEndsAt: liveState.turnEndsAt,
+    turnPausedRemainingMs: liveState.turnPausedRemainingMs,
     createdAt: roomRow.createdAt.getTime(),
     updatedAt: roomRow.updatedAt.getTime(),
   };
@@ -301,7 +303,10 @@ export async function passTurn(roomId: string, userId: string): Promise<Room | n
   return (await getRoom(roomId)) ?? null;
 }
 
-// Owner-only: changes take effect starting with the next turn, not retroactively.
+// Owner-only: changes take effect starting with the next turn, not
+// retroactively. The ownership check is folded into the UPDATE's WHERE
+// clause (rather than a separate findFirst beforehand) so this is one DB
+// round trip instead of two before the getRoom() refetch.
 export async function setTurnDuration(
   roomId: string,
   userId: string,
@@ -311,14 +316,40 @@ export async function setTurnDuration(
     throw new Error(`turnDurationSeconds must be between ${MIN_TURN_SECONDS} and ${MAX_TURN_SECONDS}`);
   }
 
-  const roomRow = await db.query.rooms.findFirst({ where: eq(rooms.id, roomId) });
-  if (!roomRow) return null;
-  if (roomRow.ownerId !== userId) return null;
-
-  await db
+  const [updated] = await db
     .update(rooms)
     .set({ turnDurationSeconds: Math.round(seconds), updatedAt: new Date() })
-    .where(eq(rooms.id, roomId));
+    .where(and(eq(rooms.id, roomId), eq(rooms.ownerId, userId)))
+    .returning({ id: rooms.id });
+  if (!updated) return null;
+
+  return (await getRoom(roomId)) ?? null;
+}
+
+// Owner-only: freezes the current turn's countdown where it stands.
+export async function pauseTurn(roomId: string, userId: string): Promise<Room | null> {
+  const roomRow = await db.query.rooms.findFirst({
+    where: eq(rooms.id, roomId),
+    columns: { ownerId: true },
+  });
+  if (!roomRow || roomRow.ownerId !== userId) return null;
+
+  const result = await roomState.pauseTurn(roomId);
+  if (!result) return null;
+
+  return (await getRoom(roomId)) ?? null;
+}
+
+// Owner-only: resumes a paused turn with whatever time was left on the clock.
+export async function resumeTurn(roomId: string, userId: string): Promise<Room | null> {
+  const roomRow = await db.query.rooms.findFirst({
+    where: eq(rooms.id, roomId),
+    columns: { ownerId: true },
+  });
+  if (!roomRow || roomRow.ownerId !== userId) return null;
+
+  const result = await roomState.resumeTurn(roomId);
+  if (!result) return null;
 
   return (await getRoom(roomId)) ?? null;
 }

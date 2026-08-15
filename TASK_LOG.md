@@ -134,3 +134,203 @@ call, down from the 4.9-10.3s you saw. Typecheck and lint stayed clean.
 The first request after any period of inactivity will still be slow
 (Neon waking up) — that's a property of the free-tier database, not
 something the app can hide.
+
+---
+
+## Room UI pass: participant visibility, mic/camera groundwork, visual redesign
+
+**Date:** 2026-08-15
+
+**Task:** You asked for three things: confirm turn-gating (only the
+current player can edit) actually works, make it possible to see who's
+joined, add mic/camera controls, and make the whole room UI read as more
+professional/minimal rather than a generic AI-generated first draft.
+Checked turn-gating first — it was already correct (`readOnly` in
+`page.tsx` ties to `currentTurnUserId`, fails safe while auth loads) —
+so no fix needed there.
+
+For mic/camera, you confirmed (asked directly, since it's a real infra
+decision): UI groundwork now, not full peer-to-peer calls — real browser
+permission requests and a local self-preview, with on/off state shared
+with the room, but audio/video isn't sent to other participants yet
+(that needs a signaling channel, same category of work as the websockets
+you're deferring).
+
+**What changed:**
+- `lib/roomState.ts` — added `setMediaState`/`getMediaState`: two Redis
+  sets (`mic On`/`camera On`) per room, same pattern as presence.
+  `removePresence` now also clears a departing user from both.
+- New `app/api/rooms/[id]/media` route — `POST {mic?, camera?}`, member-
+  only, just writes the on/off flag.
+- `app/api/rooms/[id]/sync` — now also returns `onlineUserIds` (real
+  presence, not just static membership), `micOn`, `cameraOn`, fetched in
+  the same parallel batch as everything else (no new round trips added).
+- New `components/MediaControls.tsx` — mic/camera toggle buttons that
+  call real `getUserMedia`, show a small local camera preview, and report
+  on/off state up to the room.
+- `components/ParticipantsList.tsx` reworked: overlapping avatar stack
+  (was spaced-out circles), a real online/offline presence dot per person
+  instead of a static "N online" count, an emerald ring on anyone with
+  their camera on, and a small mic badge on anyone unmuted.
+- New `components/RoomHeader.tsx` — consolidated what used to be two
+  separate stacked bars (name+participants, then a permanently-open
+  invite-URL bar) into one toolbar: back button, room name, media
+  controls, participants, invite.
+- `components/InviteLink.tsx` — was a persistent full-width bar showing
+  the raw URL; now a single icon button that copies on click.
+- `components/TurnBar.tsx` — tightened spacing and type, current player
+  now shown with their avatar instead of just a name, timer chip uses
+  tabular numerals, and the owner's turn-length control is now a preset
+  dropdown (30s/1m/1.5m/2m/3m/5m/10m) with a "Custom…" option that reveals
+  a plain number input — replaces the always-visible raw number input.
+
+**Verified:** clean `tsc --noEmit` and `eslint` on every changed file —
+no new violations (the two pre-existing `page.tsx` warnings from the
+first Postgres/Redis pass are still there, untouched, not something this
+pass introduced).
+
+**Known limitation:** mic/camera are honestly local-only right now — the
+icons and preview are real (your browser's mic/camera indicator will
+light up), but no audio or video reaches other participants. That's
+explicitly deferred until there's a signaling channel, alongside the
+websockets work.
+
+---
+
+## Google Meet-style layout: 70% problem/editor, 30% video tiles
+
+**Date:** 2026-08-15
+
+**Task:** You asked for a Google Meet vibe — the problem+editor area
+taking ~70% of the room, with the rest as a column of participant
+boxes showing their camera if it's on.
+
+**What changed:**
+- New `hooks/useLocalMedia.ts` — pulled the mic/camera `getUserMedia`
+  logic out of `MediaControls` so the raw camera `MediaStream` can be
+  shared with more than one place on the page (the header toggle and
+  the new video tile) instead of being trapped inside one component.
+- `components/MediaControls.tsx` — now a plain controlled component
+  (props: `micOn`/`cameraOn`/`error`/`onToggleMic`/`onToggleCamera`)
+  instead of owning the stream itself; dropped its old inline preview
+  thumbnail since the real tile now lives in the new side panel.
+- New `components/VideoTile.tsx` — a single Meet-style tile: live
+  video for your own camera (mirrored), an avatar placeholder for
+  everyone else (no signaling channel yet, so remote camera-on just
+  shows "Camera on" over their avatar rather than a real feed), a
+  mic on/off badge, name label, and a dimmed "Offline" state.
+- New `components/ParticipantsPanel.tsx` — vertical scrollable stack
+  of `VideoTile`s for every participant, self included.
+- `app/room/[id]/page.tsx` — main content row restructured from a
+  flat `[problem 45%][editor rest]` split into `[70% problem+editor
+  wrapper][30% ParticipantsPanel]`; now owns `useLocalMedia` directly
+  and passes both the toggle handlers and the camera stream down to
+  `RoomHeader`/`ParticipantsPanel`.
+- `components/RoomHeader.tsx` — updated to the new controlled
+  `MediaControls` prop shape (`myMicOn`/`myCameraOn`/`mediaError`/
+  `onToggleMic`/`onToggleCamera`) instead of the old
+  `onMicChange`/`onCameraChange` callback pair.
+
+**Verified:** clean `tsc --noEmit`; `eslint` clean on every new/changed
+file (the two pre-existing `page.tsx` warnings from earlier passes are
+still there, untouched). Booted the dev server and confirmed it starts
+and compiles with no runtime errors. Could not click through the actual
+room UI in a browser from this sandbox — `/room/[id]` redirects to
+Clerk sign-in before the page renders, and no session is available
+here — so the visual layout (proportions, tile sizing, mirrored self
+video) is worth a manual look before calling this fully done.
+
+---
+
+## Make the three room panes resizable by drag
+
+**Date:** 2026-08-15
+
+**Task:** Follow-up to the Meet-style layout — you wanted to be able to
+resize the panels yourself instead of being locked to the 70/30 split.
+
+**What changed:**
+- New `components/ResizeHandle.tsx` — a thin draggable divider (pointer
+  events, not mouse events, so it works with trackpad/touch too) that
+  reports raw `deltaX` to whoever renders it; the caller decides which
+  panel grows/shrinks and by how much.
+- `app/room/[id]/page.tsx` — the problem panel, editor, and participants
+  panel are now three independently-sized panes separated by two
+  `ResizeHandle`s, instead of fixed `w-[45%]`/`w-[70%]`/`w-[30%]`.
+  Problem and participants widths are held in state (px) and clamped to
+  sane min/max ranges (problem: 280–800px, participants: 220–520px,
+  editor: 360px floor); the editor itself just fills whatever's left via
+  `flex-1`. Initial widths are seeded once from the row's real measured
+  width (roughly matching the old 70/30 look) via a `ResizeObserver`-free
+  one-shot effect gated on a ref, then left entirely alone — from that
+  point on, sizing is 100% user-driven.
+
+**Verified:** clean `tsc --noEmit`; `eslint` clean on both new/changed
+files (same two pre-existing unrelated `page.tsx` warnings as before).
+Monaco already runs with `automaticLayout: true`, so the editor reflows
+correctly as its container is resized — no changes needed there. Booted
+the dev server and confirmed both `/` and `/room/[id]` respond with no
+compile errors; couldn't drag-test the actual handles in a browser from
+this sandbox (same Clerk sign-in gate as the previous entry) — worth a
+manual drag test to confirm feel/clamping before considering this done.
+
+---
+
+## Fix slow turn-duration changes + add a host pause/resume timer control
+
+**Date:** 2026-08-15
+
+**Task:** You reported changing the turn timer takes a few seconds to
+land, and asked for a way for the host to pause the timer.
+
+**Diagnosed the slowness first:** `handleSetTurnDuration` (and
+`handlePassTurn`) in `page.tsx` were awaiting the `PATCH`/`POST` to
+`/api/rooms/[id]/turn` — which already computes and returns the fresh
+`room` in its response — and then throwing that response away and
+calling `syncState()`, a second full `/sync` request that reruns
+`getRoom` (relational Postgres query + Redis reads) from scratch. Every
+duration change or turn pass was paying for two sequential full
+room-state round trips instead of one. `setTurnDuration` itself also
+did a `findFirst` just to check ownership before its `UPDATE`, adding a
+third round trip before the mutation even started.
+
+**What changed:**
+- `app/room/[id]/page.tsx` — `handlePassTurn`, `handleSetTurnDuration`,
+  and the new `handleTogglePause` now apply the `room` object already
+  returned by the mutation directly to state (`applyRoomUpdate`),
+  instead of discarding it and re-fetching via `syncState()`. Falls
+  back to `syncState()` only if the request itself failed.
+- `lib/rooms.ts` — `setTurnDuration` folds its ownership check into the
+  `UPDATE ... WHERE id = ? AND owner_id = ?` itself (via `.returning()`)
+  instead of a separate `findFirst` beforehand — one DB round trip
+  instead of two before the `getRoom()` refetch.
+
+**Pause/resume timer (host-only):**
+- `lib/roomState.ts` — new `turnPausedRemainingMs` field on the live
+  Redis hash. `pauseTurn()` snapshots however much time was left and
+  clears `turnEndsAt` (so the existing timeout-auto-advance check in
+  `getRoom()` leaves a paused turn alone for free — it only fires when
+  `turnEndsAt` is non-null). `resumeTurn()` sets a fresh `turnEndsAt`
+  from the saved remainder. Both new turns (`startTurn`) and new
+  sessions (`resetLiveStateForSession`) explicitly clear any stale
+  pause state so it can never leak across turns.
+- `lib/rooms.ts` — new host-only `pauseTurn`/`resumeTurn`, and
+  `turnPausedRemainingMs` added to the `Room` shape returned everywhere.
+- `app/api/rooms/[id]/turn` `PATCH` now also accepts `{ paused: boolean
+  }` alongside the existing `turnDurationSeconds` body.
+- `app/api/rooms/[id]/sync` now also returns `turnPausedRemainingMs`.
+- `components/TurnBar.tsx` — new Pause/Resume button next to "Pass
+  turn", visible only to the host whenever a turn is active. The
+  countdown chip shows an amber "Paused · mm:ss" instead of ticking
+  while paused (the existing 1s-tick effect already stops itself
+  automatically, since it's keyed on `turnEndsAt` being non-null, which
+  becomes `null` while paused).
+
+**Verified:** clean `tsc --noEmit`; `eslint` clean on every changed
+file (the two pre-existing `page.tsx` warnings are still there,
+untouched). Booted the dev server and hit `/`, `/room/[id]`, and a
+`PATCH .../turn` with `{"paused":true}` — all compiled and responded
+with no server errors (auth-redirected as expected, no session in this
+sandbox). Didn't get to click an actual pause button in a browser here
+— worth confirming the countdown visibly freezes/resumes and that
+non-hosts can't trigger it.

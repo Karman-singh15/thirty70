@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { passTurn, setTurnDuration } from "@/lib/rooms";
+import { pauseTurn, passTurn, resumeTurn, setTurnDuration } from "@/lib/rooms";
 
 // Current turn holder passes to the next player.
 export async function POST(
@@ -21,7 +21,8 @@ export async function POST(
   return NextResponse.json({ room });
 }
 
-// Room owner sets how long each turn lasts.
+// Room owner sets how long each turn lasts, or pauses/resumes the current
+// turn's countdown.
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -33,6 +34,18 @@ export async function PATCH(
 
   const { id } = await params;
   const body = await req.json();
+
+  if (typeof body.paused === "boolean") {
+    const room = body.paused ? await pauseTurn(id, userId) : await resumeTurn(id, userId);
+    if (!room) {
+      return NextResponse.json(
+        { error: "Room not found, not the owner, or no active turn" },
+        { status: 403 }
+      );
+    }
+    return NextResponse.json({ room });
+  }
+
   const seconds = Number(body.turnDurationSeconds);
 
   if (!Number.isFinite(seconds)) {
