@@ -2,42 +2,54 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// Local-only for now: requests real browser mic/camera permission and keeps
-// the live stream around so it can be rendered as a self-preview tile.
-// The stream itself isn't sent to other participants yet (needs a
-// signaling channel, which comes with the realtime work later) — on/off
-// state is reported up via onMicChange/onCameraChange instead.
+// Owns the local mic/camera: requests real browser permission, keeps the live
+// streams around for the self-preview tile, and exposes the individual tracks
+// so useWebRTC can push them to peers. Reports on/off state upward so the
+// room can show who's unmuted even before a peer connection is established.
 export function useLocalMedia(
   onMicChange: (on: boolean) => void,
   onCameraChange: (on: boolean) => void
 ) {
-  const [micOn, setMicOn] = useState(false);
-  const [cameraOn, setCameraOn] = useState(false);
+  const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const micStream = useRef<MediaStream | null>(null);
+
+  const micOn = micStream !== null;
+  const cameraOn = cameraStream !== null;
+  const audioTrack = micStream?.getAudioTracks()[0] ?? null;
+  const videoTrack = cameraStream?.getVideoTracks()[0] ?? null;
+
+  // Mirrored into a ref purely so the unmount cleanup below can see the
+  // *current* streams. Closing over the state directly would capture the
+  // first render's values (both null) and release nothing — leaving the
+  // camera light on after the user leaves the room.
+  const streamsRef = useRef<{ mic: MediaStream | null; camera: MediaStream | null }>({
+    mic: null,
+    camera: null,
+  });
+
+  useEffect(() => {
+    streamsRef.current = { mic: micStream, camera: cameraStream };
+  }, [micStream, cameraStream]);
 
   useEffect(() => {
     return () => {
-      micStream.current?.getTracks().forEach((t) => t.stop());
-      cameraStream?.getTracks().forEach((t) => t.stop());
+      streamsRef.current.mic?.getTracks().forEach((t) => t.stop());
+      streamsRef.current.camera?.getTracks().forEach((t) => t.stop());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function toggleMic() {
     setError(null);
-    if (micOn) {
-      micStream.current?.getTracks().forEach((t) => t.stop());
-      micStream.current = null;
-      setMicOn(false);
+    if (micStream) {
+      micStream.getTracks().forEach((t) => t.stop());
+      setMicStream(null);
       onMicChange(false);
       return;
     }
 
     try {
-      micStream.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-      setMicOn(true);
+      setMicStream(await navigator.mediaDevices.getUserMedia({ audio: true }));
       onMicChange(true);
     } catch {
       setError("Couldn't access your microphone");
@@ -46,23 +58,29 @@ export function useLocalMedia(
 
   async function toggleCamera() {
     setError(null);
-    if (cameraOn) {
-      cameraStream?.getTracks().forEach((t) => t.stop());
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((t) => t.stop());
       setCameraStream(null);
-      setCameraOn(false);
       onCameraChange(false);
       return;
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      setCameraStream(stream);
-      setCameraOn(true);
+      setCameraStream(await navigator.mediaDevices.getUserMedia({ video: true }));
       onCameraChange(true);
     } catch {
       setError("Couldn't access your camera");
     }
   }
 
-  return { micOn, cameraOn, cameraStream, error, toggleMic, toggleCamera };
+  return {
+    micOn,
+    cameraOn,
+    cameraStream,
+    audioTrack,
+    videoTrack,
+    error,
+    toggleMic,
+    toggleCamera,
+  };
 }

@@ -156,6 +156,20 @@ export async function getRoom(id: string): Promise<Room | undefined> {
   };
 }
 
+// Single indexed lookup — for hot paths (WebRTC signaling) that only need to
+// know "is this user allowed in here", not the whole room.
+export async function isRoomMember(roomId: string, userId: string): Promise<boolean> {
+  const row = await db.query.roomParticipants.findFirst({
+    where: and(
+      eq(roomParticipants.roomId, roomId),
+      eq(roomParticipants.userId, userId),
+      isNull(roomParticipants.leftAt)
+    ),
+    columns: { userId: true },
+  });
+  return !!row;
+}
+
 export async function getRoomByInviteCode(code: string): Promise<Room | undefined> {
   const roomRow = await db.query.rooms.findFirst({ where: eq(rooms.inviteCode, code) });
   if (!roomRow) return undefined;
@@ -193,6 +207,7 @@ export async function joinRoom(
 
   await db.update(rooms).set({ updatedAt: new Date() }).where(eq(rooms.id, roomId));
   await roomState.touchPresence(roomId, userId);
+  await roomState.addToTurnOrder(roomId, userId);
 
   return (await getRoom(roomId)) ?? null;
 }
@@ -361,6 +376,37 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
     .where(and(eq(roomParticipants.roomId, roomId), eq(roomParticipants.userId, userId)));
 
   await roomState.removePresence(roomId, userId);
+
+  const [roomRow, order, live] = await Promise.all([
+    db.query.rooms.findFirst({ where: eq(rooms.id, roomId) }),
+    roomState.getTurnOrder(roomId),
+    roomState.getLiveState(roomId),
+  ]);
+
+  if (roomRow && order.includes(userId)) {
+    if (live.currentTurnUserId === userId) {
+      const stillQueued = order.filter((id) => id !== userId);
+      if (stillQueued.length === 0) {
+        await roomState.clearCurrentTurn(roomId);
+      } else {
+        if (live.sessionId) {
+          await db.insert(turns).values({
+            sessionId: live.sessionId,
+            playerId: userId,
+            turnNumber: live.turnNumber,
+            codeSnapshot: live.code,
+            result: "passed_turn",
+            startedAt: live.turnStartedAt ? new Date(live.turnStartedAt) : new Date(),
+            endedAt: new Date(),
+          });
+        }
+        // Rotate off the (still-present) order first so the "next after
+        // userId" math is correct, then drop them from the queue below.
+        await roomState.advanceTurn(roomId, roomRow.turnDurationSeconds * 1000);
+      }
+    }
+    await roomState.removeFromTurnOrder(roomId, userId);
+  }
 
   const remaining = await db
     .select({ userId: roomParticipants.userId })

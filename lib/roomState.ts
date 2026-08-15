@@ -11,6 +11,10 @@ const stateKey = (roomId: string) => `room:${roomId}:state`;
 const presenceKey = (roomId: string) => `room:${roomId}:presence`;
 const turnOrderKey = (roomId: string) => `room:${roomId}:turnOrder`;
 const mediaKey = (roomId: string, kind: "mic" | "camera") => `room:${roomId}:${kind}On`;
+const signalKey = (roomId: string, userId: string) => `room:${roomId}:signal:${userId}`;
+
+const SIGNAL_TTL_SECONDS = 120; // a WebRTC handshake message is worthless after this
+const SIGNAL_QUEUE_MAX = 200; // cap so a peer that stopped polling can't grow it unbounded
 
 export interface LiveRoomState {
   code: string;
@@ -148,6 +152,38 @@ export async function getTurnOrder(roomId: string): Promise<string[]> {
   return redis.lrange(turnOrderKey(roomId), 0, -1);
 }
 
+// Adds a late joiner to the tail of the circular queue. Only meaningful once
+// a session has actually started the queue (setTurnOrder ran) — if no one's
+// picked a problem yet, this joiner will be included in that initial snapshot
+// instead, so an empty queue here is left alone.
+export async function addToTurnOrder(roomId: string, userId: string): Promise<void> {
+  const key = turnOrderKey(roomId);
+  const existing = await redis.lrange(key, 0, -1);
+  if (existing.length === 0 || existing.includes(userId)) return;
+  await redis.pipeline().rpush(key, userId).expire(key, STATE_TTL_SECONDS).exec();
+}
+
+export async function removeFromTurnOrder(roomId: string, userId: string): Promise<void> {
+  await redis.lrem(turnOrderKey(roomId), 0, userId);
+}
+
+// Ends the current turn with no one left to hand it to (the last queued
+// player just left). Leaves turnNumber as-is — it resumes, not restarts, if
+// the queue gains players again.
+export async function clearCurrentTurn(roomId: string): Promise<void> {
+  const key = stateKey(roomId);
+  await redis
+    .pipeline()
+    .hset(key, {
+      currentTurnUserId: "",
+      turnStartedAt: "",
+      turnEndsAt: "",
+      turnPausedRemainingMs: "",
+    })
+    .expire(key, STATE_TTL_SECONDS)
+    .exec();
+}
+
 export async function startTurn(
   roomId: string,
   userId: string,
@@ -260,6 +296,68 @@ export async function getMediaState(
     redis.smembers(mediaKey(roomId, "camera")),
   ]);
   return { micOn, cameraOn };
+}
+
+// --- WebRTC signaling mailboxes ---
+//
+// Each participant gets a per-room inbox list that peers push handshake
+// messages (SDP offers/answers, ICE candidates) into. The media itself never
+// touches the server — it flows browser-to-browser — so this only carries the
+// small setup messages. Inboxes expire on their own (SIGNAL_TTL_SECONDS), so
+// there's nothing to clean up when someone disappears mid-handshake.
+
+export interface SignalMessage {
+  from: string;
+  // Identifies the sender's *page load*, not the user. A refresh produces
+  // brand-new peer connections, and the remote side has no other way to tell
+  // that the connection it still holds is now pointing at a dead browser.
+  session: string;
+  type: "hello" | "offer" | "answer" | "ice";
+  data: unknown;
+}
+
+export async function pushSignals(
+  roomId: string,
+  messages: {
+    to: string;
+    from: string;
+    session: string;
+    type: SignalMessage["type"];
+    data: unknown;
+  }[]
+): Promise<void> {
+  if (messages.length === 0) return;
+
+  const pipeline = redis.pipeline();
+  for (const m of messages) {
+    const key = signalKey(roomId, m.to);
+    pipeline.rpush(
+      key,
+      JSON.stringify({ from: m.from, session: m.session, type: m.type, data: m.data })
+    );
+    pipeline.ltrim(key, -SIGNAL_QUEUE_MAX, -1);
+    pipeline.expire(key, SIGNAL_TTL_SECONDS);
+  }
+  await pipeline.exec();
+}
+
+// Reads and clears the caller's inbox in one atomic step, so a message pushed
+// mid-drain is never silently dropped.
+export async function drainSignals(
+  roomId: string,
+  userId: string
+): Promise<SignalMessage[]> {
+  const key = signalKey(roomId, userId);
+  const results = await redis.multi().lrange(key, 0, -1).del(key).exec();
+  const raw = (results?.[0]?.[1] as string[] | undefined) ?? [];
+
+  return raw.flatMap((entry) => {
+    try {
+      return [JSON.parse(entry) as SignalMessage];
+    } catch {
+      return [];
+    }
+  });
 }
 
 // Ensures only one concurrent poller processes a given turn's timeout —

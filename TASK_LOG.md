@@ -334,3 +334,349 @@ with no server errors (auth-redirected as expected, no session in this
 sandbox). Didn't get to click an actual pause button in a browser here
 — worth confirming the countdown visibly freezes/resumes and that
 non-hosts can't trigger it.
+
+---
+
+## Real peer-to-peer video/audio (WebRTC over the existing polling)
+
+**Date:** 2026-08-16
+
+**Task:** You couldn't see or hear another participant who had their
+camera/mic on — only the on/off indicator was shared, which was the
+limitation flagged in the two previous media entries. You framed this
+as "we'll add realtime afterwards", so the important correction is:
+**transmitting audio/video doesn't require WebSockets.** WebRTC media
+flows browser-to-browser (never through our server); only the ~2-second
+connection handshake needs a message channel, and that rides fine on
+HTTP polling. So this is built now and doesn't block on, or get
+thrown away by, the PartyKit/WebSocket work later — that swap just
+makes the handshake faster.
+
+**What changed:**
+- `lib/roomState.ts` — per-user signaling inboxes in Redis
+  (`room:{id}:signal:{userId}`). `pushSignals` writes a batch (capped
+  at 200 entries, 120s TTL, so an inbox nobody drains can't grow
+  unbounded or linger); `drainSignals` reads-and-clears in a `MULTI`
+  so a message pushed mid-drain isn't silently lost.
+- `lib/rooms.ts` — added `isRoomMember`, a single indexed lookup, so
+  the signaling routes can authorize without paying for a full
+  `getRoom` on a hot path.
+- New `app/api/rooms/[id]/signal` — `GET` drains my inbox, `POST`
+  sends a *batch* of messages to peers (batched because ICE candidates
+  trickle out a dozen at a time and shouldn't be a dozen requests).
+- New `hooks/useWebRTC.ts` — full-mesh peer connections. Notable
+  decisions: both audio and video transceivers are created up front in
+  `sendrecv` even with no track attached, so toggling a camera later is
+  just `replaceTrack()` on an existing sender — **no renegotiation**,
+  which avoids a whole second offer/answer round trip through the slow
+  polling channel. Which side offers is decided by `myUserId < peerId`
+  so exactly one side initiates and handshakes can't collide. ICE
+  candidates arriving before their remote description get buffered and
+  flushed after. Signal polling is adaptive: 700ms while any peer is
+  still connecting, 2.5s once everyone's connected.
+- `hooks/useLocalMedia.ts` — mic stream moved from a ref into state and
+  both `audioTrack`/`videoTrack` are now exposed, so the WebRTC hook
+  can feed them to peers reactively.
+- `components/VideoTile.tsx` — remote tiles now render the peer's real
+  stream. The `<video>` element stays mounted whenever a stream exists
+  even with their camera off, because that same element carries their
+  audio; the avatar is drawn over it instead of replacing it. Self is
+  muted (no feedback loop) and mirrored; remotes are not. Added an
+  "Unmute" button that appears if the browser blocks autoplay — arriving
+  in a room by navigation doesn't always count as the user gesture
+  browsers require before playing audio.
+- `components/ParticipantsPanel.tsx` / `app/room/[id]/page.tsx` —
+  thread `remoteStreams` through. Connections are established for
+  everyone present regardless of whether they have media on yet, so
+  switching a camera on shows up immediately instead of starting a
+  handshake at that moment.
+
+**Verified:** clean `tsc --noEmit`; `eslint` clean on all new/changed
+files (only the two known pre-existing `page.tsx` warnings remain).
+Wrote a throwaway script exercising the real `pushSignals`/
+`drainSignals` against live Upstash — confirmed messages route to the
+right recipient, FIFO order is preserved (load-bearing: an offer must
+be processed before its ICE candidates), the drain is genuinely
+destructive, and payloads survive the round trip intact. Booted the dev
+server and confirmed the new `/signal` route compiles and responds.
+
+**Not verified — needs two real browsers:** I could not place an actual
+call from this sandbox, so the end-to-end handshake, the video
+rendering, and the audio path are unproven in practice. Test with two
+accounts on two devices before trusting it.
+
+**Known limitations:**
+- **No TURN server.** Only free Google STUN is configured, so peers
+  behind symmetric NAT or strict corporate firewalls will fail to
+  connect (typical home and mobile networks are fine). A TURN relay
+  carries every packet, which is why it costs money; Open Relay
+  (metered.ca) has a free tier if this turns out to be a problem.
+- **Full mesh**, so each participant holds a connection to every other
+  one. Fine for a practice room of 3-4; it would need an SFU before it
+  needed anything else.
+- Connection setup takes a couple of seconds because signaling is
+  polled. This is exactly what moving signaling onto WebSockets later
+  fixes — the media path itself won't change.
+
+---
+
+## Add late joiners to the turn queue + a Leave Room button
+
+**Date:** 2026-08-16
+
+**Task:** You reported that passing the turn skips whoever joined after
+the room's turn order was set, and asked for a Leave button that also
+pulls the leaver out of the queue. Root cause: `turnOrder` in Redis is
+only populated once, when the host picks a problem (`setRoomProblem`
+snapshots whoever's a member at that moment) — anyone joining afterward
+was never inserted into that list, so `advanceTurn`'s circular rotation
+just never reached them. Separately, `leaveRoom` already existed in
+`lib/rooms.ts` from the earlier Postgres/Redis migration but nothing
+ever called it — no API route, no UI, and it never touched the turn
+queue at all.
+
+**What changed:**
+- `lib/roomState.ts` — new `addToTurnOrder` (appends to the tail of the
+  live Redis list, a no-op if the queue hasn't started yet or the user's
+  already in it), `removeFromTurnOrder` (`LREM`), and `clearCurrentTurn`
+  (ends the active turn with no successor, for when the last queued
+  player leaves — leaves `turnNumber` alone so it resumes rather than
+  restarts if the queue gains players again).
+- `lib/rooms.ts` — `joinRoom` now calls `addToTurnOrder` after adding
+  the participant, so anyone joining mid-session enters the circular
+  queue immediately. `leaveRoom` now checks whether the leaver is
+  queued: if they hold the current turn, it rotates to the next queued
+  player first (reusing the existing `advanceTurn` math, which needs
+  the leaver still present in the list to compute "next after them"
+  correctly) and logs a `passed_turn` turn record, or clears the turn
+  entirely if they were the last one queued — only *then* removes them
+  from the list.
+- New `app/api/rooms/[id]/leave` route — `POST`, calls `leaveRoom` for
+  the authenticated caller.
+- `components/RoomHeader.tsx` — new `onLeave` prop and a "Leave" button
+  (red on hover) next to the invite link.
+- `app/room/[id]/page.tsx` — new `handleLeaveRoom`: posts to the leave
+  route, then routes to `/dashboard` via `useRouter`.
+
+**Verified:** clean `tsc --noEmit`; confirmed the two `eslint` errors in
+`page.tsx` (`setState` inside `useEffect`, lines 161/172) and the
+`app/page.tsx` unused-import warning all pre-date this change (reran
+lint against a stash of everything but this task's files — identical
+errors, same line numbers shifted only by unrelated pending edits).
+Did not click through an actual join/leave/pass-turn cycle in a browser
+from this sandbox (same Clerk sign-in gate as prior entries) — worth
+testing with two accounts: join mid-session and confirm the new person
+gets a turn, then have the active player leave and confirm the turn
+rotates immediately instead of waiting out the timer.
+
+---
+
+## Cross-check two parallel agents' work + fix a camera-stays-on bug
+
+**Date:** 2026-08-16
+
+**Task:** Two Claude sessions worked on this repo concurrently (one on
+WebRTC peer-to-peer media, one on turn-queue joiners/leavers). You asked
+for a check that we hadn't clobbered each other's files or broken
+anything.
+
+**Overlap result — no collisions.** Four files were touched by both
+sessions (`lib/roomState.ts`, `lib/rooms.ts`, `app/room/[id]/page.tsx`,
+`TASK_LOG.md`) but every edit was additive and in a different region:
+new Redis helpers appended alongside each other, separate handlers and
+imports in the page. Redis key namespaces don't overlap either —
+`room:{id}:signal:{userId}` (WebRTC) vs `room:{id}:turnOrder` and
+`room:{id}:state` (turn queue). Both feature sets are fully present; the
+earlier layout/resize/pause work was committed as `807cbc4`, so nothing
+was lost.
+
+**Bug found and fixed (mine, surfaced by their change):**
+`hooks/useLocalMedia.ts` released the mic/camera in an unmount cleanup
+with an empty dep array, so the closure captured the *first* render's
+stream values — both `null` — and stopped nothing. The camera and mic
+hardware stayed live after leaving a room (browser recording indicator
+still lit). It was latent before because unmounting only happened on
+manual navigation; the new Leave Room button makes it a routine path,
+which is what exposed it. Fixed by mirroring the streams into a ref
+that the cleanup reads, so it sees the current streams instead of the
+initial nulls. This also let the `react-hooks/exhaustive-deps`
+suppression comment go away rather than being worked around.
+
+**Verified:** clean `tsc --noEmit` across the merged tree. `eslint` over
+`hooks/ components/ lib/ app/` shows only the three known pre-existing
+problems (two `set-state-in-effect` errors in `page.tsx`, one unused
+import in `app/page.tsx` — confirmed unmodified by either session).
+Wrote a throwaway script running both feature sets against the same
+room on live Upstash — 11/11 checks passed: late joiners append to the
+turn order without disturbing queued signaling messages, signals stay
+FIFO-intact across turn-order writes, pause/resume still behaves, and
+critically the leave path still clears presence and media flags (that
+presence removal is exactly what triggers WebRTC peer teardown on the
+other clients, so the two features depend on each other here). Booted
+the dev server and confirmed all five room API routes
+(`signal`/`leave`/`turn`/`media`/`sync`) compile and respond with zero
+server errors.
+
+**Still unproven:** the actual two-browser call. Every prior media entry
+carries this caveat and it hasn't been discharged yet — the WebRTC
+handshake, video rendering, and audio path have never run against a
+real second peer. The camera-release fix above is likewise only
+verified by reading the code, not by watching the recording indicator
+go out.
+
+---
+
+## Fix: remote camera feed never rendered
+
+**Date:** 2026-08-16
+
+**Task:** You tested the WebRTC work with a real second person and the
+camera feed still didn't come through. Traced it by reading the code
+rather than guessing — found two separate bugs, either of which alone
+would produce exactly "no video".
+
+**Bug 1 (root cause) — the video element never picked up the video
+track.** `ontrack` fires *twice* per peer, once for audio and once for
+video, because both transceivers are declared up front. The old handler
+added each arriving track to one long-lived `MediaStream` and pushed
+that same object into state each time. Since the audio transceiver is
+created first, audio arrives first: `VideoTile` bound `srcObject` to a
+stream that at that moment held only an audio track. When the video
+track was added a moment later, the `MediaStream` object *identity*
+never changed, so the tile's effect (deps `[stream, isSelf]`) didn't
+re-run — and a `<video>` element does not reliably start rendering a
+track appended to the stream it's already bound to. Net effect: audio
+would have worked, video silently never appeared. Fixed by keeping the
+peer's tracks in a `Map` keyed by kind and building a **new**
+`MediaStream` on every `ontrack`, so the identity changes, the effect
+re-runs, and `srcObject` is re-assigned with both tracks present.
+
+**Bug 2 — autoplay rejection killed the picture, not just the sound.**
+Remote tiles rendered `<video muted={false}>`, and browsers refuse to
+autoplay unmuted media without a user gesture. A rejected `play()`
+leaves the element paused entirely, so the *video* didn't render
+either — the "Unmute" affordance was mis-framed as an audio-only
+fallback when it was actually gating the whole picture. Now the element
+is always mounted `muted` (video autoplay is never refused), and the
+effect attempts to unmute remote peers immediately; if the browser
+blocks that, it falls back to muted playback — keeping the picture —
+and shows the button to enable sound under a real click.
+
+**Also added — connection-state badges.** `useWebRTC` now tracks each
+peer's `RTCPeerConnectionState` and `VideoTile` shows "Connecting…" or
+"Can't connect" on a remote tile that hasn't reached `connected`.
+Previously a peer that failed ICE was indistinguishable from one whose
+camera was simply off — both were a blank tile — which is precisely why
+this bug was hard to place. With no TURN server configured, "Can't
+connect" is the expected outcome on a restrictive network, and now it
+says so.
+
+**Verified:** clean `tsc --noEmit`, `eslint` clean on all changed files
+(only the two known pre-existing `page.tsx` errors), and a full
+`npm run build` succeeds with all 17 routes including `/signal`.
+
+**Still not verified in a browser.** I have no way to run two real peers
+from this sandbox, so these are code-inspection fixes. If the feed is
+*still* missing after this, the new badge is the thing to read: a tile
+stuck on "Connecting…" or showing "Can't connect" means the handshake
+or ICE is failing (network/TURN), while a tile with no badge at all
+means the connection succeeded and the problem is downstream in
+rendering — two very different fixes, and that badge tells us which.
+
+---
+
+## Fix: refreshing the page broke every connection
+
+**Date:** 2026-08-16
+
+**Task:** You reported that refreshing the page broke the whole system.
+
+**Cause:** a reload gives you brand-new `RTCPeerConnection` objects, but
+the *other* browser has no way to know that. Its presence entry for you
+never lapses (a refresh takes ~1s against a 10s presence window), so the
+reconciliation effect never tore down the now-dead connection — it kept
+talking to a browser that no longer existed. Worse, because the offerer
+was chosen purely by `myUserId < peerId`, if the person who refreshed
+held the *higher* id they'd wait for an offer that was never going to
+come: a permanent deadlock for one of the two directions, decided by
+nothing more than how the two Clerk ids happened to sort.
+
+**Fix — a per-page-load session id.** Every signal now carries a
+`session` generated fresh on each load. A peer that receives a signal
+whose session differs from the one it has on file knows the far side
+reloaded, tears down the stale connection, and rebuilds. To cover the
+direction where the reloader isn't the designated offerer, creating a
+connection from presence discovery now also emits a `hello` announcing
+the new session — that's what prompts the *other* side to rebuild and
+re-offer. `hello` is only sent on presence discovery, never in reply to
+an inbound signal, otherwise the two sides would ping-pong hellos
+forever. The `initiate` rule stays id-ordered so exactly one side offers.
+
+**Verified:** clean `tsc`, `eslint` back to only the three known
+pre-existing problems, `npm run build` passes. Wrote a throwaway script
+covering both reload directions — 13/13 checks: the `session` field
+survives the Redis relay, `hello` is delivered ahead of the offer that
+follows it (load-bearing, and it holds because the inbox is a FIFO
+list), the previously-deadlocking case now has the non-reloading side
+rebuild *and* re-offer, the reverse case rebuilds as an answerer without
+a duplicate offer, an unchanged session doesn't churn a healthy
+connection, and exactly one side initiates in every pairing.
+
+**Note:** the session-role assertions are a model of the decision
+predicates, not a live two-browser test — that remains unrun from here.
+
+**Worth knowing for testing:** `getUserMedia` and `crypto.randomUUID`
+both require a secure context. Testing two devices over a plain-http LAN
+address (`http://172.20.x.x:3000`) means the camera never opens at all —
+use `localhost` on one machine, or an https tunnel, or two profiles on
+the same machine. (A non-crypto session-id fallback is in place for that
+case, but it does not rescue `getUserMedia`.)
+
+---
+
+## Fix: video only flowed one way (offerer → answerer)
+
+**Date:** 2026-08-16
+
+**Task:** Two browsers on localhost. The host's camera reached the
+participant, but the participant's camera never reached the host.
+
+**Diagnosis came straight from the screenshot**, and the badge added in
+the previous entry is what made it readable: the broken tile showed an
+*avatar* with *no connection badge*. No badge means the peer connection
+reached `connected`, so ICE, STUN and the signaling relay were all fine
+— that ruled out the entire network layer. And an avatar rather than a
+black frame means `stream` was null, i.e. `ontrack` never fired on the
+host at all. A healthy connection carrying media in exactly one
+direction points at one thing: the answerer never agreed to send.
+
+**Cause.** Both sides pre-created their audio/video transceivers in
+`createPeer`. That's correct for the offerer, but wrong for the
+answerer: transceivers created locally ahead of time are not associated
+with the m-lines of an incoming offer, so the browser builds its *own*
+pair to answer with — and those default to **`recvonly`**. The answer
+therefore advertised "I will only receive". The answerer's
+`replaceTrack()` still resolved happily against its orphaned, never-
+negotiated transceivers, so nothing looked wrong locally, but no media
+left the machine and the offerer's `ontrack` never fired. Perfectly
+asymmetric, and silent on both ends.
+
+**Fix.** Only the initiator calls `addTransceiver` now. The answerer
+starts with a bare connection and adopts the transceivers that
+`setRemoteDescription` creates from the offer. New `applyTracks(pc)`
+helper looks a connection's transceivers up by kind, forces each to
+`sendrecv`, and attaches whatever local tracks currently exist. It runs
+at three points: when the offerer builds its connection, in the
+track-change effect when a camera/mic toggles, and — the load-bearing
+one — **between `setRemoteDescription` and `createAnswer`**, which is
+the only window where flipping the direction still lands in the answer
+being sent.
+
+**Verified:** clean `tsc`, `eslint` back to the three known pre-existing
+problems, `npm run build` passes, and confirmed by inspection that
+`addTransceiver` is now guarded by `initiate` and that `applyTracks`
+sits at all three required call sites in the right order.
+
+**Not verified in a browser** — same standing caveat. The reasoning
+accounts for the exact observed asymmetry, but only a real two-peer test
+settles it.

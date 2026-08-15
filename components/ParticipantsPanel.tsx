@@ -15,6 +15,8 @@ interface ParticipantsPanelProps {
   cameraOn: string[];
   myUserId: string | null;
   myCameraStream: MediaStream | null;
+  remoteStreams: Record<string, MediaStream>;
+  connectionStates: Record<string, RTCPeerConnectionState>;
 }
 
 export function ParticipantsPanel({
@@ -24,6 +26,8 @@ export function ParticipantsPanel({
   cameraOn,
   myUserId,
   myCameraStream,
+  remoteStreams,
+  connectionStates,
 }: ParticipantsPanelProps) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
@@ -38,7 +42,8 @@ export function ParticipantsPanel({
             micOn={micOn.includes(p.userId)}
             cameraOn={cameraOn.includes(p.userId)}
             isSelf={isSelf}
-            stream={isSelf ? myCameraStream : null}
+            stream={isSelf ? myCameraStream : (remoteStreams[p.userId] ?? null)}
+            connectionState={isSelf ? undefined : connectionStates[p.userId]}
           />
         );
       })}

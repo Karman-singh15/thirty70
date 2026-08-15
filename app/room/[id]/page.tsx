@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { Header } from "@/components/Header";
 import { RoomHeader } from "@/components/RoomHeader";
@@ -11,6 +12,7 @@ import { TurnBar } from "@/components/TurnBar";
 import { ParticipantsPanel } from "@/components/ParticipantsPanel";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import { useLocalMedia } from "@/hooks/useLocalMedia";
+import { useWebRTC } from "@/hooks/useWebRTC";
 
 const MIN_PROBLEM_WIDTH = 280;
 const MAX_PROBLEM_WIDTH = 800;
@@ -68,6 +70,7 @@ const LANG_MAP: Record<string, string> = {
 
 export default function RoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { userId: myUserId } = useAuth();
+  const router = useRouter();
   const [roomId, setRoomId] = useState<string>("");
   const [room, setRoom] = useState<RoomData | null>(null);
   const [problemDetail, setProblemDetail] = useState<ProblemDetail | null>(null);
@@ -258,6 +261,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     setRoom((prev) => (prev ? { ...prev, ...r } : prev));
   }
 
+  async function handleLeaveRoom() {
+    if (!roomId) return;
+    await fetch(`/api/rooms/${roomId}/leave`, { method: "POST" });
+    router.push("/dashboard");
+  }
+
   async function handlePassTurn() {
     if (!roomId) return;
     const res = await fetch(`/api/rooms/${roomId}/turn`, { method: "POST" });
@@ -323,6 +332,8 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     micOn: myMicOn,
     cameraOn: myCameraOn,
     cameraStream: myCameraStream,
+    audioTrack,
+    videoTrack,
     error: mediaError,
     toggleMic,
     toggleCamera,
@@ -330,6 +341,17 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     (on) => reportMediaChange("mic", on),
     (on) => reportMediaChange("camera", on)
   );
+
+  // Connect to everyone currently present, regardless of whether they have
+  // media on yet — the connection is established up front so toggling a
+  // camera later is instant rather than starting a handshake from scratch.
+  const { remoteStreams, connectionStates } = useWebRTC({
+    roomId,
+    myUserId: myUserId ?? null,
+    peerIds: room?.onlineUserIds ?? [],
+    audioTrack,
+    videoTrack,
+  });
 
   if (!room) {
     return (
@@ -360,6 +382,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         mediaError={mediaError}
         onToggleMic={toggleMic}
         onToggleCamera={toggleCamera}
+        onLeave={handleLeaveRoom}
       />
 
       <TurnBar
@@ -423,6 +446,8 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             cameraOn={room.cameraOn}
             myUserId={myUserId ?? null}
             myCameraStream={myCameraStream}
+            remoteStreams={remoteStreams}
+            connectionStates={connectionStates}
           />
         </div>
       </div>
