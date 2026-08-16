@@ -18,6 +18,19 @@ body {
   font-family: var(--font-sans), system-ui, sans-serif;
 }
 
+/* The other player's cursor in the shared editor. The caret decoration sits
+   on a zero-width range, so it only shows up at all because of the border. */
+.collab-caret {
+  border-left: 2px solid #34d399;
+  margin-left: -1px;
+  position: relative;
+  z-index: 2;
+}
+
+.collab-caret-line {
+  background: rgba(52, 211, 153, 0.07);
+}
+
 /* LeetCode problem content styling */
 .prose pre {
   border-radius: 0.5rem;

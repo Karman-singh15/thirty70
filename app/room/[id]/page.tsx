@@ -13,6 +13,7 @@ import { ParticipantsPanel } from "@/components/ParticipantsPanel";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import { useLocalMedia } from "@/hooks/useLocalMedia";
 import { useWebRTC } from "@/hooks/useWebRTC";
+import { useSharedEditor } from "@/hooks/useSharedEditor";
 
 const MIN_PROBLEM_WIDTH = 280;
 const MAX_PROBLEM_WIDTH = 800;
@@ -36,9 +37,8 @@ interface RoomData {
     difficulty: string;
     frontendQuestionId: string;
   } | null;
-  code: string;
-  language: string;
   turnDurationSeconds: number;
+  turnOrder: string[];
   currentTurnUserId: string | null;
   turnNumber: number;
   turnEndsAt: number | null;
@@ -75,11 +75,6 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const [room, setRoom] = useState<RoomData | null>(null);
   const [problemDetail, setProblemDetail] = useState<ProblemDetail | null>(null);
   const [problemLoading, setProblemLoading] = useState(false);
-  const [code, setCode] = useState("");
-  const [language, setLanguage] = useState("javascript");
-  const lastUpdatedAt = useRef(0);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isLocalEdit = useRef(false);
   const [problemWidth, setProblemWidth] = useState(420);
   const [participantsWidth, setParticipantsWidth] = useState(320);
   const mainRowRef = useRef<HTMLDivElement | null>(null);
@@ -113,16 +108,16 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         onlineUserIds: [],
         micOn: [],
         cameraOn: [],
+        turnOrder: [],
         ...prev,
         ...r,
       }));
-      if (!isLocalEdit.current) {
-        setCode(r.code);
-        setLanguage(r.language);
-      }
     }
   }, [roomId]);
 
+  // Turn state, presence and media. The editor's contents deliberately do not
+  // come through here — they arrive push-style over the shared-editor event
+  // stream, which is far faster than this poll and would only be fought by it.
   const syncState = useCallback(async () => {
     if (!roomId) return;
     const res = await fetch(`/api/rooms/${roomId}/sync`);
@@ -130,21 +125,14 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
     const data = await res.json();
 
-    if (data.updatedAt > lastUpdatedAt.current && !isLocalEdit.current) {
-      setCode(data.code);
-      setLanguage(data.language);
-      lastUpdatedAt.current = data.updatedAt;
-    }
-
     setRoom((prev) =>
       prev
         ? {
             ...prev,
             participants: data.participants,
             problem: data.problem,
-            code: data.code,
-            language: data.language,
             turnDurationSeconds: data.turnDurationSeconds,
+            turnOrder: data.turnOrder,
             currentTurnUserId: data.currentTurnUserId,
             turnNumber: data.turnNumber,
             turnEndsAt: data.turnEndsAt,
@@ -182,6 +170,21 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       .finally(() => setProblemLoading(false));
   }, [room?.problem?.titleSlug]);
 
+  // Mirrors the server's rule: before any turn has started anyone may write;
+  // once a turn is under way, only its holder. Computed here rather than after
+  // the loading return so the editor hook below can be given it.
+  const currentTurnUserId = room?.currentTurnUserId ?? null;
+  const canEdit = currentTurnUserId === null || currentTurnUserId === myUserId;
+
+  // The editor's document, language and cursor, shared with everyone in the
+  // room over a live event stream.
+  const editor = useSharedEditor({
+    roomId,
+    myUserId: myUserId ?? null,
+    canEdit,
+    writerId: currentTurnUserId,
+  });
+
   async function handleProblemSelect(problem: {
     title: string;
     titleSlug: string;
@@ -195,13 +198,15 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
     const starterCode =
       detail?.codeSnippets?.find(
-        (s: { langSlug: string }) => s.langSlug === LANG_MAP[language]
+        (s: { langSlug: string }) => s.langSlug === LANG_MAP[editor.language]
       )?.code ??
       detail?.codeSnippets?.[0]?.code ??
       "";
 
     // Problem + starter code are set atomically so the first turn starts
-    // with real code already in place, before turn-gating applies.
+    // with real code already in place, before turn-gating applies. Everyone's
+    // editor — this one included — picks the new document up from the
+    // broadcast that write publishes.
     await fetch(`/api/rooms/${roomId}/sync`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -213,44 +218,21 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           frontendQuestionId: problem.frontendQuestionId,
         },
         code: starterCode,
-        language,
+        language: editor.language,
       }),
     });
 
-    setCode(starterCode);
     fetchRoom();
   }
 
-  function handleCodeChange(newCode: string) {
-    isLocalEdit.current = true;
-    setCode(newCode);
-
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      const res = await fetch(`/api/rooms/${roomId}/sync`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: newCode, language }),
-      });
-      isLocalEdit.current = false;
-
-      if (res.ok) {
-        lastUpdatedAt.current = Date.now();
-      } else {
-        // Rejected (e.g. turn moved on mid-edit) — pull the real state back.
-        syncState();
-      }
-    }, 500);
-  }
-
+  // The language is part of the shared document, so switching it swaps
+  // everyone over — along with that language's starter code, when the problem
+  // provides one.
   function handleLanguageChange(newLang: string) {
-    setLanguage(newLang);
     const snippet = problemDetail?.codeSnippets?.find(
       (s) => s.langSlug === LANG_MAP[newLang]
     );
-    if (snippet) {
-      handleCodeChange(snippet.code);
-    }
+    editor.setDocument(snippet?.code ?? editor.getCode(), newLang);
   }
 
   // The turn endpoints already return the fresh room in their response —
@@ -362,9 +344,21 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   }
 
   const isOwner = !!myUserId && room.ownerId === myUserId;
-  // Mirrors the server: no active turn yet means anyone can edit; once a
-  // turn is assigned, only its holder can.
-  const readOnly = room.currentTurnUserId !== null && room.currentTurnUserId !== myUserId;
+  const readOnly = !canEdit;
+
+  // Whose cursor we're showing, resolved to a name. Only the current writer
+  // broadcasts one, so there is at most one at a time.
+  const cursorOwner = editor.remoteCursor
+    ? room.participants.find((p) => p.userId === editor.remoteCursor!.userId)
+    : undefined;
+  const writerLabel =
+    editor.remoteCursor && cursorOwner
+      ? {
+          name: cursorOwner.name,
+          lineNumber: editor.remoteCursor.lineNumber,
+          column: editor.remoteCursor.column,
+        }
+      : null;
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950">
@@ -387,6 +381,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
       <TurnBar
         participants={room.participants}
+        turnOrder={room.turnOrder}
         currentTurnUserId={room.currentTurnUserId}
         turnNumber={room.turnNumber}
         turnEndsAt={room.turnEndsAt}
@@ -422,11 +417,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
         <div className="flex-1 overflow-hidden" style={{ minWidth: MIN_EDITOR_WIDTH }}>
           <CodeEditor
-            code={code}
-            language={language}
-            onChange={handleCodeChange}
+            language={editor.language}
             onLanguageChange={handleLanguageChange}
+            onEditorMount={editor.attach}
             readOnly={readOnly}
+            writerLabel={writerLabel}
+            connected={editor.connected}
           />
         </div>
 

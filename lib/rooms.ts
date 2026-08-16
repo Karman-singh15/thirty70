@@ -170,6 +170,16 @@ export async function isRoomMember(roomId: string, userId: string): Promise<bool
   return !!row;
 }
 
+// Authorization for the shared editor's hot path, which runs on roughly every
+// keystroke. Mirrors the rule in updateRoomCode — once a turn is under way
+// only its holder may write, before that any member may — but resolves the
+// common case from Redis alone, without a Postgres round trip.
+export async function canEditRoom(roomId: string, userId: string): Promise<boolean> {
+  const turn = await roomState.getCurrentTurn(roomId);
+  if (turn) return turn.userId === userId;
+  return isRoomMember(roomId, userId);
+}
+
 export async function getRoomByInviteCode(code: string): Promise<Room | undefined> {
   const roomRow = await db.query.rooms.findFirst({ where: eq(rooms.inviteCode, code) });
   if (!roomRow) return undefined;
@@ -251,7 +261,21 @@ export async function setRoomProblem(
 
   const order = activeParticipants.map((p) => p.userId);
   await roomState.setTurnOrder(roomId, order);
-  await roomState.resetLiveStateForSession(roomId, session.id, starterCode, starterLanguage);
+  const docVersion = await roomState.resetLiveStateForSession(
+    roomId,
+    session.id,
+    starterCode,
+    starterLanguage
+  );
+
+  // A new problem replaces the document outright — tell every connected
+  // editor to reset onto it rather than waiting for their next poll.
+  await roomState.publishEditorEvent(roomId, {
+    type: "doc",
+    version: docVersion,
+    code: starterCode,
+    language: starterLanguage,
+  });
 
   if (order.length > 0) {
     await roomState.startTurn(roomId, order[0], 1, roomRow.turnDurationSeconds * 1000);
@@ -281,7 +305,11 @@ export async function updateRoomCode(
   if (!membership) return "not_member";
   if (turn && turn.userId !== userId) return "not_your_turn";
 
-  await roomState.setLiveCode(roomId, code, language);
+  const version = await roomState.setLiveCode(roomId, code, language);
+  // Whole-document write, so everyone resets onto it. The live editor path
+  // (/api/rooms/[id]/editor) sends incremental changes instead; this one
+  // stays for callers that only have the finished text.
+  await roomState.publishEditorEvent(roomId, { type: "doc", version, code, language });
   await roomState.touchPresence(roomId, userId);
   return "ok";
 }

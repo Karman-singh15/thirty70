@@ -1,4 +1,10 @@
-import { redis } from "@/lib/redis";
+import { createRedisSubscriber, redis } from "@/lib/redis";
+import type {
+  CursorPosition,
+  DocChange,
+  EditorDoc,
+  EditorEvent,
+} from "@/lib/editorDoc";
 
 // Live, ephemeral per-room state. Postgres (lib/rooms.ts) owns the durable
 // record; Redis owns whatever needs to be read/written on every poll or
@@ -12,6 +18,7 @@ const presenceKey = (roomId: string) => `room:${roomId}:presence`;
 const turnOrderKey = (roomId: string) => `room:${roomId}:turnOrder`;
 const mediaKey = (roomId: string, kind: "mic" | "camera") => `room:${roomId}:${kind}On`;
 const signalKey = (roomId: string, userId: string) => `room:${roomId}:signal:${userId}`;
+const editorChannel = (roomId: string) => `room:${roomId}:editor`;
 
 const SIGNAL_TTL_SECONDS = 120; // a WebRTC handshake message is worthless after this
 const SIGNAL_QUEUE_MAX = 200; // cap so a peer that stopped polling can't grow it unbounded
@@ -19,6 +26,10 @@ const SIGNAL_QUEUE_MAX = 200; // cap so a peer that stopped polling can't grow i
 export interface LiveRoomState {
   code: string;
   language: string;
+  // Bumped on every accepted write to the shared document. Clients use it to
+  // tell "the next edit in sequence" from "I missed something and need to
+  // resync", and it's what makes the compare-and-set write below safe.
+  docVersion: number;
   updatedAt: number;
   sessionId: string | null;
   currentTurnUserId: string | null;
@@ -35,6 +46,7 @@ export interface LiveRoomState {
 const DEFAULT_STATE: LiveRoomState = {
   code: "",
   language: "javascript",
+  docVersion: 0,
   updatedAt: 0,
   sessionId: null,
   currentTurnUserId: null,
@@ -51,6 +63,7 @@ export async function getLiveState(roomId: string): Promise<LiveRoomState> {
   return {
     code: hash.code ?? "",
     language: hash.language || "javascript",
+    docVersion: Number(hash.docVersion) || 0,
     updatedAt: Number(hash.updatedAt) || 0,
     sessionId: hash.sessionId || null,
     currentTurnUserId: hash.currentTurnUserId || null,
@@ -63,28 +76,39 @@ export async function getLiveState(roomId: string): Promise<LiveRoomState> {
   };
 }
 
+// Unconditional write — for callers that already own the whole document and
+// aren't racing anyone (the legacy /sync autosave path). Returns the new
+// document version so the caller can announce it.
 export async function setLiveCode(
   roomId: string,
   code: string,
   language: string
-): Promise<void> {
+): Promise<number> {
   const key = stateKey(roomId);
-  await redis
+  const results = await redis
     .pipeline()
     .hset(key, { code, language, updatedAt: Date.now() })
+    .hincrby(key, "docVersion", 1)
     .expire(key, STATE_TTL_SECONDS)
     .exec();
+  return Number(results?.[1]?.[1] ?? 0);
 }
 
 // Starts a fresh session: resets code + turn state, keeps nothing from the last problem.
+//
+// docVersion deliberately keeps counting up rather than restarting at 1.
+// Clients ignore any document older than the one they hold, so a counter that
+// restarted would make the reset look stale to everyone already in the room —
+// they'd sit on the previous problem's code. Returns the new version so the
+// caller can announce it.
 export async function resetLiveStateForSession(
   roomId: string,
   sessionId: string,
   code: string,
   language: string
-): Promise<void> {
+): Promise<number> {
   const key = stateKey(roomId);
-  await redis
+  const results = await redis
     .pipeline()
     .hset(key, {
       code,
@@ -97,8 +121,10 @@ export async function resetLiveStateForSession(
       turnEndsAt: "",
       turnPausedRemainingMs: "",
     })
+    .hincrby(key, "docVersion", 1)
     .expire(key, STATE_TTL_SECONDS)
     .exec();
+  return Number(results?.[1]?.[1] ?? 1);
 }
 
 export async function clearRoomState(roomId: string): Promise<void> {
@@ -109,6 +135,106 @@ export async function clearRoomState(roomId: string): Promise<void> {
     mediaKey(roomId, "mic"),
     mediaKey(roomId, "camera")
   );
+}
+
+// --- Shared document (the collaborative editor) ---
+//
+// Every client holds a copy of the same document. Redis holds the canonical
+// one, tagged with a version. A client writes by sending the full resulting
+// text along with the version it believed it was editing; the write only
+// lands if that version is still current. The small edits that produced the
+// text ride along and get fanned out to the other clients, so they can patch
+// their editor in place (keeping scroll position and cursor) instead of
+// having the whole buffer replaced under them on every keystroke.
+//
+// Sending the full text rather than having the server splice the edits in is
+// deliberate: it makes the write a single atomic compare-and-set, with no
+// read-modify-write window and no string-offset arithmetic in Lua (whose
+// byte-based indexing would corrupt any non-ASCII character in the file).
+
+export type { CursorPosition, DocChange, EditorDoc, EditorEvent };
+
+export type CasResult =
+  | { ok: true; version: number }
+  | { ok: false; doc: EditorDoc };
+
+// Applies only if `docVersion` still matches what the writer was editing.
+// Returns the current document when it doesn't, so the caller can hand the
+// writer the truth to reset onto.
+const CAS_SET_CODE = `
+local key = KEYS[1]
+local expected = tonumber(ARGV[1])
+local current = tonumber(redis.call('HGET', key, 'docVersion'))
+if current == nil then current = 0 end
+if expected ~= current then
+  return {0, current, redis.call('HGET', key, 'code') or '', redis.call('HGET', key, 'language') or ''}
+end
+local next_version = current + 1
+redis.call('HSET', key, 'code', ARGV[2], 'language', ARGV[3], 'docVersion', next_version, 'updatedAt', ARGV[4])
+redis.call('EXPIRE', key, tonumber(ARGV[5]))
+return {1, next_version}
+`;
+
+export async function casSetCode(
+  roomId: string,
+  expectedVersion: number,
+  code: string,
+  language: string
+): Promise<CasResult> {
+  const result = (await redis.eval(
+    CAS_SET_CODE,
+    1,
+    stateKey(roomId),
+    expectedVersion,
+    code,
+    language,
+    Date.now(),
+    STATE_TTL_SECONDS
+  )) as [number, number] | [number, number, string, string];
+
+  if (Number(result[0]) === 1) {
+    return { ok: true, version: Number(result[1]) };
+  }
+  return {
+    ok: false,
+    doc: {
+      version: Number(result[1]),
+      code: (result[2] as string) ?? "",
+      language: (result[3] as string) || "javascript",
+    },
+  };
+}
+
+export async function publishEditorEvent(
+  roomId: string,
+  event: EditorEvent
+): Promise<void> {
+  await redis.publish(editorChannel(roomId), JSON.stringify(event));
+}
+
+// Server-side listener behind the SSE route. Each subscriber owns its
+// connection (a connection in subscriber mode can't serve anything else) and
+// hands back a teardown to run when the client disconnects.
+export function subscribeEditorEvents(
+  roomId: string,
+  onMessage: (raw: string) => void
+): () => void {
+  const sub = createRedisSubscriber();
+  const channel = editorChannel(roomId);
+
+  sub.subscribe(channel).catch(() => {});
+  sub.on("message", (received, raw) => {
+    if (received === channel) onMessage(raw);
+  });
+  // A dropped connection reconnects and resubscribes on its own; the client
+  // resyncs from the snapshot it gets on its own reconnect, so there's
+  // nothing to recover here beyond not crashing.
+  sub.on("error", () => {});
+
+  return () => {
+    sub.removeAllListeners();
+    sub.quit().catch(() => sub.disconnect());
+  };
 }
 
 // --- Presence ---

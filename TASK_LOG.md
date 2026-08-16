@@ -680,3 +680,165 @@ sits at all three required call sites in the right order.
 **Not verified in a browser** — same standing caveat. The reasoning
 accounts for the exact observed asymmetry, but only a real two-peer test
 settles it.
+
+---
+
+## Turn rotation: verified the backend, made the UI legible
+
+**Date:** 2026-08-16
+
+**Task:** You asked for joiners to enter the turn cycle, leavers to be
+removed, the editor locked to the turn holder, a fix for turns "not
+being passed", a more noticeable (but still subtle) your-turn cue, and a
+visible sequence of upcoming turns.
+
+**Tested the backend before changing it, and it was already correct.**
+Two throwaway scripts against the real Neon/Upstash, 23 assertions in
+total, all passing: a joiner is appended to the rotation and actually
+receives a turn; a leaver is removed *and* the turn hands off
+immediately if it was theirs; `passTurn` rotates and increments; a
+non-holder can't pass; an expired turn auto-rotates on the next poll;
+and the editor gate holds server-side — the holder can write, a
+non-holder gets `not_your_turn`, a non-member gets `not_member`, a
+rejected write leaves the stored code untouched, and edit rights follow
+the rotation. Also confirmed `@monaco-editor/react` really does apply a
+changed `readOnly` (it calls `updateOptions` whenever the options object
+changes), so the client gate wasn't stale either.
+
+**So "the turn is not being passed" wasn't a rotation bug — it was
+invisibility**, and most likely this: with one player in the rotation,
+`(0 + 1) % 1 === 0` hands the turn straight back to you. The turn number
+advances but the holder doesn't change, which is indistinguishable from
+a dead button. The queue UI below now makes that state self-evident, and
+there's an explicit "only you in the rotation" note.
+
+**What changed (all UI):**
+- New `components/TurnQueue.tsx` — the rotation as a left-to-right
+  timeline of avatar chips, driven by `turnOrder` (sequence) joined
+  against `participants` (display data), with anyone who has since left
+  dropped. Active player gets an emerald chip and ring; the next player
+  up is tinted a step brighter than the rest; your own chip reads "You".
+  Scrolls horizontally rather than wrapping.
+- `components/TurnBar.tsx` — rebuilt around that queue. When it's your
+  turn the whole bar takes a faint emerald wash plus a solid emerald
+  left edge and a small pulsing dot: catchable in peripheral vision
+  without becoming a banner that shouts over the problem. Header now
+  reads "<name>'s turn" rather than a bare name.
+- `components/CodeEditor.tsx` — the status chip is now an explicit
+  lock/pencil state: "Read-only — not your turn" vs. a highlighted
+  "You can edit", replacing the easily-missed grey sentence.
+- `app/room/[id]/page.tsx` — `turnOrder` now flows into client state
+  (the sync route was already returning it; the client had been
+  discarding it) and down into `TurnBar`.
+
+**Verified:** clean `tsc`, `eslint` at the three known pre-existing
+problems, `npm run build` passes, and the turn lifecycle script re-run
+after the changes still passes end to end.
+
+**Not verified:** the visual result in a browser — worth a look to check
+the queue doesn't crowd the bar once four or five people are in a room.
+
+---
+
+## Shared editor: one live document for the whole room
+
+**Date:** 2026-08-16
+
+**Task:** You asked for the editor to sync between users so everyone sees
+changes as they're made, for the language to be common to everyone, and
+for the editor's state to be shared the way a Google Doc is.
+
+**What was actually wrong.** The code *was* being shared, but through a
+path that couldn't feel live: the writer's editor debounced 500ms, saved
+the whole file, and everyone else picked it up on a 1.5s poll — so two
+seconds of lag, and every arriving update replaced the reader's entire
+buffer, throwing away their scroll position. Language was worse: it lived
+in local React state and only reached the server when the new language
+happened to have a starter snippet, so it could silently disagree between
+people.
+
+**Kept turn-gating.** Only the current player can type — that's the
+product, not a limitation, so this shares the document without opening
+editing to everyone. Docs' hard problem (merging concurrent edits) doesn't
+arise with a single writer, which is why there's no OT/CRDT here.
+
+**Transport — server-sent events over Redis pub/sub.** Worth being clear
+since WebSockets keep coming up: this needed a *push* channel, and SSE is
+one, over plain HTTP. Measured it end to end through the running dev
+server — publish to receive was 31ms, versus the ~2s the poll gave.
+- New `app/api/rooms/[id]/stream` — an SSE route. Each connection opens
+  with a full snapshot (so connecting and reconnecting are the same thing
+  and there's no window where a client patches a stale buffer), then
+  relays events. Each subscriber gets its own Redis connection, because a
+  connection in subscriber mode can't serve anything else, and it's torn
+  down on `req.signal` abort — verified that fires.
+- The 1.5s `/sync` poll stays for turn state, presence and media; it's
+  also what keeps presence alive. It no longer carries code or language,
+  which would have fought the stream.
+
+**Document model — versioned, server-authoritative.**
+- `lib/roomState.ts` — the live state hash gains `docVersion`, plus
+  `casSetCode`: a Lua compare-and-set that applies a write only if the
+  version the writer was editing is still current. The client sends the
+  full resulting text *and* the small changes that produced it; the text
+  makes the write a single atomic operation, and the changes get fanned
+  out so everyone else patches their editor by range instead of having
+  the buffer replaced under them. Deliberately no string splicing in Lua
+  — its byte indexing would corrupt any non-ASCII character in the file.
+- New `app/api/rooms/[id]/editor` — `GET` the document (for recovery),
+  `POST` an edit, a language change, or a cursor move. Authorized through
+  a new `canEditRoom`, which resolves the usual case from Redis alone
+  since it runs on nearly every keystroke.
+- New `lib/editorDoc.ts` — the wire types, free of runtime dependencies so
+  the browser can import them without pulling in the Redis client.
+
+**Client — `hooks/useSharedEditor.ts`.** The editor is no longer driven by
+a React `value` prop; it can't be, if remote edits are to land without
+discarding the reader's scroll position, selection and undo history on
+every keystroke. The hook owns the Monaco model directly. Notable
+decisions: exactly one request in flight at a time (edits are a sequence,
+and two racing requests could arrive out of order); a failed request puts
+its edits back at the front rather than dropping them; each delta carries
+the resulting document length, so a client whose replay didn't reproduce
+the writer's text notices and refetches; and a page-load id distinguishes
+our own echo from a second tab of the same account.
+
+**Also — you can see where the other person is working.** The writer's
+cursor is broadcast and drawn in everyone else's editor as a caret with a
+tinted line, and named in the toolbar ("Alice · Ln 12, Col 5"). Cheap,
+and it's most of what makes a Doc feel shared rather than merely synced.
+
+**Bug found and fixed while building it.** `resetLiveStateForSession` set
+the version back to 1 on each new problem. Since clients ignore any
+document older than the one they hold, everyone already in the room would
+have ignored the switch and sat on the previous problem's code. The
+counter now keeps climbing for the room's lifetime.
+
+**Verified:** clean `tsc`, `npm run build` (both new routes present),
+`eslint` back to the two known pre-existing `page.tsx` errors and nothing
+new. Two throwaway scripts against live Upstash — 28 assertions, all
+passing: a viewer replaying broadcast deltas reproduces the writer's
+document exactly across inserts, replacements, deletions, multi-change
+events and non-ASCII text; versions arrive in unbroken order; the length
+check agrees on every delta; a stale write is refused and hands back the
+current document without modifying anything; exactly one of ten
+concurrent writes lands; a mid-room problem switch is accepted by a
+client already well ahead of version 1. Separately booted the dev server
+and streamed real events through the actual SSE route: snapshot on
+connect, heartbeats, three published events delivered in 31ms each with
+no proxy buffering, and the subscriber torn down on disconnect.
+
+**Not verified — needs two real browsers.** Everything above tests the
+server and the sync algorithm; nothing here has driven an actual Monaco
+model. The remote-cursor decorations and the in-place patching (that the
+reader's scroll really does hold still while someone types above them)
+are unproven in practice. Same standing caveat as the WebRTC entries.
+
+**Known limitations:** each SSE connection holds a Redis connection for
+as long as it's open, which is fine for practice rooms but is the first
+thing that would need pooling at scale. Deployed to a platform with a
+function timeout, the stream will be cut at that limit — EventSource
+reconnects and the snapshot makes that harmless, but it means a reconnect
+every N minutes. And the writer's own cursor is the only one shared;
+readers' cursors aren't, deliberately, since broadcasting those would
+cost a membership lookup per move.
