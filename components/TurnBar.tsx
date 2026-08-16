@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Pause, Play, SkipForward } from "lucide-react";
 import { TurnQueue } from "@/components/TurnQueue";
+import { Spinner } from "@/components/Spinner";
 
 interface TurnParticipant {
   userId: string;
@@ -24,6 +25,9 @@ interface TurnBarProps {
   onPass: () => void;
   onChangeDuration: (seconds: number) => void;
   onTogglePause: (paused: boolean) => void;
+  passPending?: boolean;
+  pausePending?: boolean;
+  durationPending?: boolean;
 }
 
 const DURATION_STEPS = [30, 60, 90, 120, 180, 300, 600];
@@ -54,6 +58,9 @@ export function TurnBar({
   onPass,
   onChangeDuration,
   onTogglePause,
+  passPending = false,
+  pausePending = false,
+  durationPending = false,
 }: TurnBarProps) {
   const [now, setNow] = useState(() => Date.now());
   const [customInput, setCustomInput] = useState<string | null>(null);
@@ -144,7 +151,9 @@ export function TurnBar({
         {isOwner && customInput === null && (
           <label className="flex items-center gap-1.5 text-xs text-zinc-500">
             Turn length
+            {durationPending && <Spinner className="h-3 w-3 text-zinc-400" />}
             <select
+              disabled={durationPending}
               value={
                 DURATION_STEPS.includes(turnDurationSeconds) ? turnDurationSeconds : "custom"
               }
@@ -155,7 +164,7 @@ export function TurnBar({
                   onChangeDuration(Number(e.target.value));
                 }
               }}
-              className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300 focus:outline-none"
+              className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300 focus:outline-none disabled:opacity-50"
             >
               {DURATION_STEPS.map((s) => (
                 <option key={s} value={s}>
@@ -200,22 +209,20 @@ export function TurnBar({
         {isOwner && currentTurnUserId !== null && (
           <button
             onClick={() => onTogglePause(!isPaused)}
-            className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+            disabled={pausePending}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:opacity-60 ${
               isPaused
                 ? "bg-amber-500/15 text-amber-400 hover:bg-amber-500/25"
                 : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
             }`}
           >
-            {isPaused ? (
-              <>
-                Resume
-                <Play className="h-3 w-3" />
-              </>
+            {isPaused ? "Resume" : "Pause"}
+            {pausePending ? (
+              <Spinner />
+            ) : isPaused ? (
+              <Play className="h-3 w-3" />
             ) : (
-              <>
-                Pause
-                <Pause className="h-3 w-3" />
-              </>
+              <Pause className="h-3 w-3" />
             )}
           </button>
         )}
@@ -223,10 +230,11 @@ export function TurnBar({
         {isMyTurn && (
           <button
             onClick={onPass}
-            className="flex shrink-0 items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white shadow-sm shadow-emerald-900/40 hover:bg-emerald-500"
+            disabled={passPending}
+            className="flex shrink-0 items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white shadow-sm shadow-emerald-900/40 hover:bg-emerald-500 disabled:cursor-wait disabled:bg-emerald-600/70"
           >
-            Pass turn
-            <SkipForward className="h-3 w-3" />
+            {passPending ? "Passing…" : "Pass turn"}
+            {passPending ? <Spinner /> : <SkipForward className="h-3 w-3" />}
           </button>
         )}
       </div>

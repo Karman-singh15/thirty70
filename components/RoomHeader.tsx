@@ -5,6 +5,7 @@ import { ArrowLeft, LogOut } from "lucide-react";
 import { InviteLink } from "@/components/InviteLink";
 import { ParticipantsList } from "@/components/ParticipantsList";
 import { MediaControls } from "@/components/MediaControls";
+import { Spinner } from "@/components/Spinner";
 
 interface RoomHeaderProps {
   roomName: string;
@@ -19,6 +20,7 @@ interface RoomHeaderProps {
   onToggleMic: () => void;
   onToggleCamera: () => void;
   onLeave: () => void;
+  leavePending?: boolean;
 }
 
 export function RoomHeader({
@@ -34,6 +36,7 @@ export function RoomHeader({
   onToggleMic,
   onToggleCamera,
   onLeave,
+  leavePending = false,
 }: RoomHeaderProps) {
   return (
     <div className="flex items-center justify-between gap-4 border-b border-zinc-800 px-4 py-2.5">
@@ -67,10 +70,15 @@ export function RoomHeader({
         <div className="h-6 w-px bg-zinc-800" />
         <button
           onClick={onLeave}
-          className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-zinc-400 hover:bg-red-500/10 hover:text-red-400"
+          disabled={leavePending}
+          className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-zinc-400 hover:bg-red-500/10 hover:text-red-400 disabled:cursor-wait disabled:opacity-60"
         >
-          <LogOut className="h-3.5 w-3.5" />
-          Leave
+          {leavePending ? (
+            <Spinner className="h-3.5 w-3.5" />
+          ) : (
+            <LogOut className="h-3.5 w-3.5" />
+          )}
+          {leavePending ? "Leaving…" : "Leave"}
         </button>
       </div>
     </div>

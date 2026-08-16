@@ -1,11 +1,10 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { canEditRoom, isRoomMember } from "@/lib/rooms";
+import { isRoomMember } from "@/lib/rooms";
 import {
   casSetCode,
   getLiveState,
   publishEditorEvent,
-  touchPresence,
   type CursorPosition,
   type DocChange,
 } from "@/lib/roomState";
@@ -83,10 +82,18 @@ export async function POST(
   const body = await req.json();
   const origin = typeof body.origin === "string" ? body.origin : "";
 
-  // Everything here is a write, so the same gate applies throughout: whoever
-  // holds the turn. Resolved from Redis alone in the usual case, because this
-  // runs on nearly every keystroke.
-  if (!(await canEditRoom(id, userId))) {
+  // One read serves both the permission check and the current language. This
+  // runs on nearly every keystroke, so each avoided round trip is ~30ms off
+  // how long it takes an edit to show up on everyone else's screen.
+  const live = await getLiveState(id);
+
+  // Same gate as everywhere else: whoever holds the turn. Before any turn has
+  // started there's nobody to compare against, so membership has to be
+  // checked in Postgres — rare, and only until the host picks a problem.
+  const allowed = live.currentTurnUserId
+    ? live.currentTurnUserId === userId
+    : await isRoomMember(id, userId);
+  if (!allowed) {
     return NextResponse.json({ error: "Not your turn" }, { status: 403 });
   }
 
@@ -114,7 +121,6 @@ export async function POST(
     return NextResponse.json({ error: "Invalid baseVersion" }, { status: 400 });
   }
 
-  const live = await getLiveState(id);
   const language = isLanguageChange
     ? typeof body.language === "string" && body.language
       ? body.language
@@ -135,30 +141,31 @@ export async function POST(
     return NextResponse.json({ ok: false, stale: true, doc: result.doc });
   }
 
+  // Typing is proof of life, so the writer's presence is refreshed in the
+  // same pipeline as the broadcast rather than costing its own round trip.
   if (isLanguageChange) {
     // The language swap also swaps in that language's starter code, so this
     // is a whole-document replacement rather than an incremental edit.
-    await publishEditorEvent(id, {
-      type: "doc",
-      version: result.version,
-      code: body.text,
-      language,
-    });
+    await publishEditorEvent(
+      id,
+      { type: "doc", version: result.version, code: body.text, language },
+      userId
+    );
   } else {
-    await publishEditorEvent(id, {
-      type: "delta",
-      version: result.version,
-      from: userId,
-      origin,
-      changes,
-      length: body.text.length,
-      cursor: parseCursor(body.cursor),
-    });
+    await publishEditorEvent(
+      id,
+      {
+        type: "delta",
+        version: result.version,
+        from: userId,
+        origin,
+        changes,
+        length: body.text.length,
+        cursor: parseCursor(body.cursor),
+      },
+      userId
+    );
   }
-
-  // Typing is proof of life — keeps the writer online without leaning on the
-  // separate /sync poll to do it.
-  await touchPresence(id, userId);
 
   return NextResponse.json({ ok: true, version: result.version, language });
 }

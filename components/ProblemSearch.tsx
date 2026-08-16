@@ -13,7 +13,9 @@ interface ProblemSummary {
 }
 
 interface ProblemSearchProps {
-  onSelect: (problem: ProblemSummary) => void;
+  // Awaited, so the row that was clicked can show it's loading until the
+  // problem is actually live in the room.
+  onSelect: (problem: ProblemSummary) => Promise<void> | void;
 }
 
 const difficultyColor: Record<string, string> = {
@@ -26,6 +28,22 @@ export function ProblemSearch({ onSelect }: ProblemSearchProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ProblemSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  // Which problem is being loaded into the room right now. This is the
+  // slowest action in the app — it fetches from LeetCode and then rewrites
+  // the room's session — so it gets the most explicit feedback.
+  const [selectingSlug, setSelectingSlug] = useState<string | null>(null);
+
+  async function handleSelect(problem: ProblemSummary) {
+    if (selectingSlug) return;
+    setSelectingSlug(problem.titleSlug);
+    try {
+      await onSelect(problem);
+      setQuery("");
+      setResults([]);
+    } finally {
+      setSelectingSlug(null);
+    }
+  }
 
   const search = useCallback(async (q: string) => {
     if (!q.trim()) {
@@ -70,19 +88,28 @@ export function ProblemSearch({ onSelect }: ProblemSearchProps) {
           {results.map((p) => (
             <li key={p.titleSlug}>
               <button
-                onClick={() => {
-                  onSelect(p);
-                  setQuery("");
-                  setResults([]);
-                }}
-                disabled={p.paidOnly}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => handleSelect(p)}
+                disabled={p.paidOnly || selectingSlug !== null}
+                className={`flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-zinc-800 disabled:cursor-not-allowed ${
+                  selectingSlug === p.titleSlug
+                    ? "bg-emerald-500/10"
+                    : "disabled:opacity-40"
+                }`}
               >
                 <span className="w-8 shrink-0 text-zinc-500">{p.frontendQuestionId}</span>
                 <span className="flex-1 truncate text-zinc-200">{p.title}</span>
-                <span className={`shrink-0 text-xs ${difficultyColor[p.difficulty] ?? "text-zinc-400"}`}>
-                  {p.difficulty}
-                </span>
+                {selectingSlug === p.titleSlug ? (
+                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-emerald-400">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Loading…
+                  </span>
+                ) : (
+                  <span
+                    className={`shrink-0 text-xs ${difficultyColor[p.difficulty] ?? "text-zinc-400"}`}
+                  >
+                    {p.difficulty}
+                  </span>
+                )}
                 {p.paidOnly && (
                   <span className="shrink-0 text-xs text-zinc-500">Premium</span>
                 )}

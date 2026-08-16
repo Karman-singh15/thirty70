@@ -18,6 +18,17 @@ body {
   font-family: var(--font-sans), system-ui, sans-serif;
 }
 
+/* Sweep for the indeterminate progress bar shown while a request is in
+   flight — the duration is unknown, so it paces rather than fills. */
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
 /* The other player's cursor in the shared editor. The caret decoration sits
    on a zero-width range, so it only shows up at all because of the border. */
 .collab-caret {

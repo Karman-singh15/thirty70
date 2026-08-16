@@ -893,3 +893,138 @@ a room that returns 404, a stale session for that deleted room also gets
 **Not verified in a browser:** the navigation itself. The redirect
 triggers are proven; that `router.replace` lands on the dashboard from
 each of these paths is not.
+
+---
+
+## Cut server latency ~20x, and show a loader while waiting
+
+**Date:** 2026-08-17
+
+**Task:** You said everything took too long to respond, asked for a
+loader whenever a press is waiting on the server, and asked that none of
+it break functionality.
+
+**Measured before changing anything.** A script timed each primitive and
+each real code path against the live Neon/Upstash instances:
+
+| | before |
+|---|---|
+| Redis command | 30ms |
+| Redis, 5 commands pipelined | 30ms |
+| Postgres `select 1` | 248ms |
+| Postgres **write** (any write) | 510ms |
+| `getRoom()` | 549ms |
+| **GET /sync** | **574ms** |
+
+Two facts shaped everything below. First, a Postgres round trip costs
+8–17x a Redis one, and the room polled Postgres several times a second
+for data — room name, participants, which problem — that changes maybe
+once an hour. Second, writes cost a flat 510ms each *regardless of what
+they are*, and parallel writes overlap almost perfectly (2 writes in
+`Promise.all` = 524ms, 4 = 560ms) — so what costs time is the number of
+sequential write *phases*, not the number of writes.
+
+**The main change: the room's durable record is cached in Redis.**
+- `lib/roomState.ts` — new `room:{id}:meta` entry holding everything
+  `getRoom` used to query Postgres for, with a 5-minute TTL. Every
+  function that changes any of it either patches the entry or drops it,
+  so a stale read isn't possible for anything the app itself does; the
+  TTL only bounds drift from things we don't see, like a Clerk display
+  name being edited elsewhere.
+- `lib/rooms.ts` — `getRoom` now issues its three reads together and
+  serves them entirely from Redis. `pauseTurn`/`resumeTurn` check
+  ownership against the cached record instead of spending a round trip
+  learning who owns the room before doing anything.
+
+**Fewer round trips on the paths that remained:**
+- `getOnlineUserIds` awaited its expiry sweep before reading, costing a
+  second round trip on every poll — now one pipeline.
+- `/sync` awaited `touchPresence` after everything else came back; it now
+  goes out with the rest.
+- The editor's write path read the live state twice (once to authorize,
+  once for the language) and then wrote presence separately. Now one read
+  serves both checks and presence rides in the same pipeline as the
+  broadcast — ~150ms to ~60ms on a path that runs while you type.
+- Turn history and session bookkeeping move off the response path via
+  `after()`. Nothing on screen reads them back, so there's no reason a
+  button press should wait ~510ms for one. Live state is in Redis, so a
+  lost write there costs history, not a working room.
+- `setRoomProblem` registered the problem and pointed the room at it as
+  two separate writes, which *can't* overlap — `rooms.problem_slug` has a
+  foreign key to `problems.title_slug`. They're now a single statement
+  with a data-modifying CTE: inside one statement the constraint isn't
+  checked until the whole thing completes, so both land in one round
+  trip. Verified against the real database with a brand-new slug, which
+  is the case that would fail if the ordering assumption were wrong.
+
+**Results.** Both columns are measured end to end — the "before" ones by
+checking the pre-change `lib/rooms.ts` out of git and benchmarking it
+against the same live services, after an initial pass where they were
+merely *derived* from component costs and turned out to be optimistic:
+
+| | before | after |
+|---|---|---|
+| GET /sync | 574ms | **32ms** |
+| Pass turn | 2382ms | **194ms** |
+| Pause | 1220ms | **97ms** |
+| Resume | 597ms | **64ms** |
+| Pick a problem | 1855ms | **661ms** |
+| Change turn length | ~610ms | **596ms** |
+
+(Pass turn's figure includes one `getRoom` the harness itself makes to
+find the current holder — ~615ms of the before, ~28ms of the after — so
+the function alone went from roughly 1770ms to 166ms. Neon's timings
+also wander: resume was measured anywhere from 557ms to 1227ms on the
+old code, so treat these as the right order of magnitude rather than
+exact.)
+
+Turn length is deliberately unchanged: it's the one action still waiting
+on a durable write. The cached record is rebuilt from Postgres whenever
+someone joins or leaves, so a turn length that only existed in Redis
+could quietly revert — not worth 500ms.
+
+**Client side:**
+- The `/sync` poll went from 1.5s to 700ms. It was 1.5s because each
+  request cost ~570ms; at ~30ms it's cheap, and it halves how long a turn
+  change takes to appear.
+- Picking a problem fetched it from LeetCode, and then the panel effect
+  fetched the very same thing again when the room updated. The host now
+  hands the details it already has straight to the panel.
+
+**The loader.** New `usePendingActions` tracks in-flight requests by
+name, so overlapping ones don't make unrelated controls spin.
+- Pass turn, Pause/Resume, turn length and Leave each swap their own icon
+  for a spinner, disable while working, and say what they're doing
+  ("Passing…", "Leaving…"). Swapping the icon rather than adding one
+  keeps the button the same size so the bar doesn't jump.
+- Problem search highlights the row you clicked and marks it "Loading…"
+  until the problem is actually live in the room — it's the slowest
+  action, so it gets the most explicit feedback.
+- New `TopProgressBar`: a thin indeterminate sweep under the header while
+  anything is pending. It's delayed 200ms *in CSS* rather than by a
+  timer, so it never flashes on requests that now finish in 30ms, and it
+  needs no state (which also kept it clear of the `set-state-in-effect`
+  lint rule).
+
+**Verified:** clean `tsc`, `npm run build`, `eslint` unchanged at the
+three known pre-existing problems. Two throwaway suites against live
+Neon/Upstash — 42 assertions on the caching change and 20 on the final
+state, all passing. The load-bearing one is repeated at six different
+points in a room's life: **a cached read is byte-identical to one that
+went to Postgres**. Also confirmed the turn gate still refuses
+non-holders and non-members, ownership checks still reject non-hosts,
+join/leave still update the rotation, the shared editor's deltas still
+replay exactly (including non-ASCII), and every deferred write really
+does land — session rows, `rooms.problem_slug`, turn duration and turn
+history all checked in Postgres afterwards.
+
+**Not verified in a browser:** the loaders themselves. Worth a look that
+the top bar genuinely doesn't flash on the now-fast actions, and that
+the problem-search row reads well while loading.
+
+**Known limitations:** the first request to a room after 5 minutes of
+quiet still pays one ~660ms Postgres read to rebuild the cached record,
+and Neon's free-tier cold start (~2.4s here, 9.4s when fully asleep) is
+still there underneath — neither is fixable from app code. Deferred
+writes are best-effort: if the process dies within ~1s of a click, that
+room's history entry is lost, though the room itself stays correct.

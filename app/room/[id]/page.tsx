@@ -14,12 +14,20 @@ import { ResizeHandle } from "@/components/ResizeHandle";
 import { useLocalMedia } from "@/hooks/useLocalMedia";
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { useSharedEditor } from "@/hooks/useSharedEditor";
+import { usePendingActions } from "@/hooks/usePendingActions";
+import { TopProgressBar } from "@/components/TopProgressBar";
 
 const MIN_PROBLEM_WIDTH = 280;
 const MAX_PROBLEM_WIDTH = 800;
 const MIN_EDITOR_WIDTH = 360;
 const MIN_PARTICIPANTS_WIDTH = 220;
 const MAX_PARTICIPANTS_WIDTH = 520;
+
+// Turn state and presence still poll (the editor itself is pushed over SSE).
+// This used to be 1.5s because each request cost ~570ms of Postgres; now that
+// the same request is served from Redis in ~30ms, polling more often is
+// cheap, and it halves how long a turn change takes to appear.
+const SYNC_POLL_MS = 700;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -79,6 +87,8 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const [participantsWidth, setParticipantsWidth] = useState(320);
   const mainRowRef = useRef<HTMLDivElement | null>(null);
   const widthsInitialized = useRef(false);
+  const prefetchedProblem = useRef<ProblemDetail | null>(null);
+  const { run, isPending, anyPending } = usePendingActions();
 
   // Seed the panel widths from the room's actual size on first render
   // (roughly the old 70/30, 45%-of-70% split), then leave them alone —
@@ -181,24 +191,39 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     if (!roomId) return;
-    const interval = setInterval(syncState, 1500);
+    const interval = setInterval(syncState, SYNC_POLL_MS);
     return () => clearInterval(interval);
   }, [roomId, syncState]);
 
+  // Fetches the problem body whenever the room's problem changes. The host
+  // who picked it already has the details in hand, so they stash them (see
+  // handleProblemSelect) and this skips a second trip to LeetCode.
+  const problemSlug = room?.problem?.titleSlug;
   useEffect(() => {
-    if (!room?.problem?.titleSlug) {
+    if (!problemSlug) {
       setProblemDetail(null);
       return;
     }
+    if (prefetchedProblem.current?.titleSlug === problemSlug) {
+      setProblemDetail(prefetchedProblem.current);
+      return;
+    }
 
+    let cancelled = false;
     setProblemLoading(true);
-    fetch(`/api/leetcode/problem/${room.problem.titleSlug}`)
+    fetch(`/api/leetcode/problem/${problemSlug}`)
       .then((r) => r.json())
       .then((data) => {
-        setProblemDetail(data.problem ?? null);
+        if (!cancelled) setProblemDetail(data.problem ?? null);
       })
-      .finally(() => setProblemLoading(false));
-  }, [room?.problem?.titleSlug]);
+      .finally(() => {
+        if (!cancelled) setProblemLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [problemSlug]);
 
   // Mirrors the server's rule: before any turn has started anyone may write;
   // once a turn is under way, only its holder. Computed here rather than after
@@ -222,9 +247,15 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     frontendQuestionId: string;
   }) {
     if (!roomId) return;
-
+    return run("problem", async () => {
     const res = await fetch(`/api/leetcode/problem/${problem.titleSlug}`);
     const { problem: detail } = await res.json();
+    // Hand these to the panel directly — the effect above would otherwise
+    // fetch the very same thing again the moment the room updates.
+    if (detail) {
+      prefetchedProblem.current = detail;
+      setProblemDetail(detail);
+    }
 
     const starterCode =
       detail?.codeSnippets?.find(
@@ -253,6 +284,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     });
 
     fetchRoom();
+    });
   }
 
   // The language is part of the shared document, so switching it swaps
@@ -275,6 +307,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
   async function handleLeaveRoom() {
     if (!roomId) return;
+    return run("leave", async () => {
     try {
       await fetch(`/api/rooms/${roomId}/leave`, { method: "POST" });
     } catch {
@@ -284,47 +317,54 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     } finally {
       goToDashboard();
     }
+    });
   }
 
   async function handlePassTurn() {
     if (!roomId) return;
-    const res = await fetch(`/api/rooms/${roomId}/turn`, { method: "POST" });
-    if (res.ok) {
-      const { room: r } = await res.json();
-      applyRoomUpdate(r);
-    } else {
-      syncState();
-    }
+    return run("pass", async () => {
+      const res = await fetch(`/api/rooms/${roomId}/turn`, { method: "POST" });
+      if (res.ok) {
+        const { room: r } = await res.json();
+        applyRoomUpdate(r);
+      } else {
+        syncState();
+      }
+    });
   }
 
   async function handleSetTurnDuration(seconds: number) {
     if (!roomId) return;
-    const res = await fetch(`/api/rooms/${roomId}/turn`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ turnDurationSeconds: seconds }),
+    return run("duration", async () => {
+      const res = await fetch(`/api/rooms/${roomId}/turn`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ turnDurationSeconds: seconds }),
+      });
+      if (res.ok) {
+        const { room: r } = await res.json();
+        applyRoomUpdate(r);
+      } else {
+        syncState();
+      }
     });
-    if (res.ok) {
-      const { room: r } = await res.json();
-      applyRoomUpdate(r);
-    } else {
-      syncState();
-    }
   }
 
   async function handleTogglePause(paused: boolean) {
     if (!roomId) return;
-    const res = await fetch(`/api/rooms/${roomId}/turn`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paused }),
+    return run("pause", async () => {
+      const res = await fetch(`/api/rooms/${roomId}/turn`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paused }),
+      });
+      if (res.ok) {
+        const { room: r } = await res.json();
+        applyRoomUpdate(r);
+      } else {
+        syncState();
+      }
     });
-    if (res.ok) {
-      const { room: r } = await res.json();
-      applyRoomUpdate(r);
-    } else {
-      syncState();
-    }
   }
 
   const reportMediaChange = useCallback(
@@ -400,6 +440,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   return (
     <div className="flex h-screen flex-col bg-zinc-950">
       <Header />
+      <TopProgressBar active={anyPending} />
 
       <RoomHeader
         roomName={room.name}
@@ -414,6 +455,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         onToggleMic={toggleMic}
         onToggleCamera={toggleCamera}
         onLeave={handleLeaveRoom}
+        leavePending={isPending("leave")}
       />
 
       <TurnBar
@@ -430,6 +472,9 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         onPass={handlePassTurn}
         onChangeDuration={handleSetTurnDuration}
         onTogglePause={handleTogglePause}
+        passPending={isPending("pass")}
+        pausePending={isPending("pause")}
+        durationPending={isPending("duration")}
       />
 
       <div ref={mainRowRef} className="flex flex-1 overflow-hidden border-t border-zinc-800">

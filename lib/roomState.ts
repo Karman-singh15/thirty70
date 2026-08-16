@@ -19,6 +19,15 @@ const turnOrderKey = (roomId: string) => `room:${roomId}:turnOrder`;
 const mediaKey = (roomId: string, kind: "mic" | "camera") => `room:${roomId}:${kind}On`;
 const signalKey = (roomId: string, userId: string) => `room:${roomId}:signal:${userId}`;
 const editorChannel = (roomId: string) => `room:${roomId}:editor`;
+const metaKey = (roomId: string) => `room:${roomId}:meta`;
+
+// How long a room's durable data may sit in the cache before being reread.
+// Every change *we* make invalidates or patches the entry outright, so this
+// only bounds staleness from changes we don't see — a Clerk display name or
+// avatar being edited elsewhere. Short enough that nobody notices, long
+// enough that a room polling every second reads Postgres about once every
+// 300 polls instead of every single one.
+const META_TTL_SECONDS = 300;
 
 const SIGNAL_TTL_SECONDS = 120; // a WebRTC handshake message is worthless after this
 const SIGNAL_QUEUE_MAX = 200; // cap so a peer that stopped polling can't grow it unbounded
@@ -132,9 +141,72 @@ export async function clearRoomState(roomId: string): Promise<void> {
     stateKey(roomId),
     presenceKey(roomId),
     turnOrderKey(roomId),
+    metaKey(roomId),
     mediaKey(roomId, "mic"),
     mediaKey(roomId, "camera")
   );
+}
+
+// --- Cached room record ---
+//
+// Everything about a room that lives in Postgres but almost never changes:
+// its name, who's in it, which problem is loaded. Reading that from Neon cost
+// ~550ms, and the room polls for turn state constantly — so the durable
+// record is cached here and every poll is served entirely from Redis (~30ms).
+//
+// Correctness comes from the write side: each function in lib/rooms.ts that
+// changes any of this either patches the entry or drops it, so a stale read
+// isn't possible for anything the app itself does.
+
+export interface CachedRoomMeta {
+  id: string;
+  name: string;
+  ownerId: string;
+  ownerName: string;
+  inviteCode: string;
+  participants: { userId: string; name: string; imageUrl: string; joinedAt: number }[];
+  problem: {
+    titleSlug: string;
+    title: string;
+    difficulty: string;
+    frontendQuestionId: string;
+  } | null;
+  turnDurationSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export async function getCachedRoomMeta(roomId: string): Promise<CachedRoomMeta | null> {
+  const raw = await redis.get(metaKey(roomId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as CachedRoomMeta;
+  } catch {
+    return null;
+  }
+}
+
+export async function setCachedRoomMeta(
+  roomId: string,
+  meta: CachedRoomMeta
+): Promise<void> {
+  await redis.set(metaKey(roomId), JSON.stringify(meta), "EX", META_TTL_SECONDS);
+}
+
+export async function invalidateRoomMeta(roomId: string): Promise<void> {
+  await redis.del(metaKey(roomId));
+}
+
+// For changes small enough to apply in place — which keeps the mutation's own
+// response on the fast path instead of forcing the next read back to Postgres.
+// A miss is a no-op: there's nothing cached to go stale.
+export async function patchCachedRoomMeta(
+  roomId: string,
+  patch: Partial<CachedRoomMeta>
+): Promise<void> {
+  const meta = await getCachedRoomMeta(roomId);
+  if (!meta) return;
+  await setCachedRoomMeta(roomId, { ...meta, ...patch });
 }
 
 // --- Shared document (the collaborative editor) ---
@@ -205,11 +277,20 @@ export async function casSetCode(
   };
 }
 
+// `touchUserId` rides along in the same pipeline: typing is proof of life, and
+// keeping the writer online shouldn't cost a second round trip on a path that
+// runs while someone is typing.
 export async function publishEditorEvent(
   roomId: string,
-  event: EditorEvent
+  event: EditorEvent,
+  touchUserId?: string
 ): Promise<void> {
-  await redis.publish(editorChannel(roomId), JSON.stringify(event));
+  const pipeline = redis.pipeline().publish(editorChannel(roomId), JSON.stringify(event));
+  if (touchUserId) {
+    const key = presenceKey(roomId);
+    pipeline.zadd(key, Date.now(), touchUserId).expire(key, STATE_TTL_SECONDS);
+  }
+  await pipeline.exec();
 }
 
 // Server-side listener behind the SSE route. Each subscriber owns its
@@ -259,8 +340,14 @@ export async function getOnlineUserIds(
 ): Promise<string[]> {
   const key = presenceKey(roomId);
   const cutoff = Date.now() - windowMs;
-  await redis.zremrangebyscore(key, "-inf", cutoff);
-  return redis.zrangebyscore(key, cutoff, "+inf");
+  // Sweeping the expired entries and reading the live ones go in one pipeline
+  // — awaiting the sweep first cost a second round trip on every poll.
+  const results = await redis
+    .pipeline()
+    .zremrangebyscore(key, "-inf", cutoff)
+    .zrangebyscore(key, cutoff, "+inf")
+    .exec();
+  return (results?.[1]?.[1] as string[] | undefined) ?? [];
 }
 
 // --- Turn order + timer ---

@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { nanoid } from "nanoid";
-import { and, eq, isNull } from "drizzle-orm";
+import { after } from "next/server";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { problems, roomParticipants, rooms, sessions, turns, users } from "@/lib/db/schema";
 import * as roomState from "@/lib/roomState";
@@ -59,20 +61,6 @@ async function ensureUser(userId: string, name: string, imageUrl: string): Promi
     .onConflictDoUpdate({ target: users.id, set: { name, imageUrl } });
 }
 
-async function upsertProblem(problem: RoomProblem): Promise<void> {
-  await db
-    .insert(problems)
-    .values(problem)
-    .onConflictDoUpdate({
-      target: problems.titleSlug,
-      set: {
-        title: problem.title,
-        difficulty: problem.difficulty,
-        frontendQuestionId: problem.frontendQuestionId,
-      },
-    });
-}
-
 export async function createRoom(
   name: string,
   ownerId: string,
@@ -87,18 +75,18 @@ export async function createRoom(
   await db.insert(rooms).values({ id, name, ownerId, inviteCode });
   await db.insert(roomParticipants).values({ roomId: id, userId: ownerId });
   await roomState.touchPresence(id, ownerId);
+  // Nothing cached yet for a brand-new id, so the getRoom below builds it.
 
   const room = await getRoom(id);
   return room!;
 }
 
-// Fetches everything needed to render a room in one parallel batch (one
-// Postgres round trip via a relational query, one Redis round trip for
-// live state + turn order) instead of staging queries sequentially. Also
-// settles an expired turn inline, so pollers don't need a separate
-// timeout-check request before this one.
-export async function getRoom(id: string): Promise<Room | undefined> {
-  const [roomRow, participantRows, live, turnOrder] = await Promise.all([
+// Reads the room's durable record straight from Postgres. Only runs on a
+// cache miss — see getRoomMeta.
+async function loadRoomMetaFromDb(
+  id: string
+): Promise<roomState.CachedRoomMeta | undefined> {
+  const [roomRow, participantRows] = await Promise.all([
     db.query.rooms.findFirst({
       where: eq(rooms.id, id),
       with: { owner: true, problem: true },
@@ -112,23 +100,13 @@ export async function getRoom(id: string): Promise<Room | undefined> {
       })
       .from(roomParticipants)
       .innerJoin(users, eq(roomParticipants.userId, users.id))
-      .where(and(eq(roomParticipants.roomId, id), isNull(roomParticipants.leftAt))),
-    roomState.getLiveState(id),
-    roomState.getTurnOrder(id),
+      .where(and(eq(roomParticipants.roomId, id), isNull(roomParticipants.leftAt)))
+      // Join order is the turn order, so it has to be deterministic here —
+      // setRoomProblem seeds the rotation straight from this list.
+      .orderBy(roomParticipants.joinedAt),
   ]);
 
   if (!roomRow) return undefined;
-
-  let liveState = live;
-  if (
-    liveState.currentTurnUserId &&
-    liveState.turnEndsAt !== null &&
-    Date.now() >= liveState.turnEndsAt &&
-    (await roomState.tryClaimTurnTimeout(id, liveState.turnNumber))
-  ) {
-    await endCurrentTurn(id, "timed_out");
-    liveState = await roomState.getLiveState(id);
-  }
 
   return {
     id: roomRow.id,
@@ -143,16 +121,71 @@ export async function getRoom(id: string): Promise<Room | undefined> {
       joinedAt: p.joinedAt.getTime(),
     })),
     problem: roomRow.problem ? mapProblem(roomRow.problem) : null,
+    turnDurationSeconds: roomRow.turnDurationSeconds,
+    createdAt: roomRow.createdAt.getTime(),
+    updatedAt: roomRow.updatedAt.getTime(),
+  };
+}
+
+// The room's durable record, from Redis when we have it. A Neon round trip is
+// ~250ms at its very fastest and ~550ms for this particular query, which is
+// most of what every poll and every button press used to spend; served from
+// the cache the same data costs ~30ms.
+export async function getRoomMeta(
+  id: string,
+  cached?: roomState.CachedRoomMeta | null
+): Promise<roomState.CachedRoomMeta | undefined> {
+  const hit = cached ?? (await roomState.getCachedRoomMeta(id));
+  if (hit) return hit;
+
+  const meta = await loadRoomMetaFromDb(id);
+  if (meta) await roomState.setCachedRoomMeta(id, meta);
+  return meta;
+}
+
+// Fetches everything needed to render a room. The three reads are issued
+// together rather than awaited in turn, so the whole thing is one round trip
+// in the common case. Also settles an expired turn inline, so pollers don't
+// need a separate timeout-check request before this one.
+export async function getRoom(id: string): Promise<Room | undefined> {
+  const [cachedMeta, live, turnOrder] = await Promise.all([
+    roomState.getCachedRoomMeta(id),
+    roomState.getLiveState(id),
+    roomState.getTurnOrder(id),
+  ]);
+
+  const meta = await getRoomMeta(id, cachedMeta);
+  if (!meta) return undefined;
+
+  let liveState = live;
+  if (
+    liveState.currentTurnUserId &&
+    liveState.turnEndsAt !== null &&
+    Date.now() >= liveState.turnEndsAt &&
+    (await roomState.tryClaimTurnTimeout(id, liveState.turnNumber))
+  ) {
+    await endCurrentTurn(id, "timed_out", meta);
+    liveState = await roomState.getLiveState(id);
+  }
+
+  return {
+    id: meta.id,
+    name: meta.name,
+    ownerId: meta.ownerId,
+    ownerName: meta.ownerName,
+    inviteCode: meta.inviteCode,
+    participants: meta.participants,
+    problem: meta.problem,
     code: liveState.code,
     language: liveState.language,
-    turnDurationSeconds: roomRow.turnDurationSeconds,
+    turnDurationSeconds: meta.turnDurationSeconds,
     turnOrder,
     currentTurnUserId: liveState.currentTurnUserId,
     turnNumber: liveState.turnNumber,
     turnEndsAt: liveState.turnEndsAt,
     turnPausedRemainingMs: liveState.turnPausedRemainingMs,
-    createdAt: roomRow.createdAt.getTime(),
-    updatedAt: roomRow.updatedAt.getTime(),
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
   };
 }
 
@@ -168,16 +201,6 @@ export async function isRoomMember(roomId: string, userId: string): Promise<bool
     columns: { userId: true },
   });
   return !!row;
-}
-
-// Authorization for the shared editor's hot path, which runs on roughly every
-// keystroke. Mirrors the rule in updateRoomCode — once a turn is under way
-// only its holder may write, before that any member may — but resolves the
-// common case from Redis alone, without a Postgres round trip.
-export async function canEditRoom(roomId: string, userId: string): Promise<boolean> {
-  const turn = await roomState.getCurrentTurn(roomId);
-  if (turn) return turn.userId === userId;
-  return isRoomMember(roomId, userId);
 }
 
 export async function getRoomByInviteCode(code: string): Promise<Room | undefined> {
@@ -218,6 +241,8 @@ export async function joinRoom(
   await db.update(rooms).set({ updatedAt: new Date() }).where(eq(rooms.id, roomId));
   await roomState.touchPresence(roomId, userId);
   await roomState.addToTurnOrder(roomId, userId);
+  // The participant list changed — rebuild it rather than trying to patch it.
+  await roomState.invalidateRoomMeta(roomId);
 
   return (await getRoom(roomId)) ?? null;
 }
@@ -231,57 +256,88 @@ export async function setRoomProblem(
   starterCode = "",
   starterLanguage = "javascript"
 ): Promise<Room | null> {
-  const roomRow = await db.query.rooms.findFirst({ where: eq(rooms.id, roomId) });
-  if (!roomRow) return null;
-  if (roomRow.ownerId !== userId) return null;
+  // Ownership, turn length and the participant list all come off the cached
+  // record — three Postgres round trips this used to make before doing any
+  // actual work.
+  const meta = await getRoomMeta(roomId);
+  if (!meta) return null;
+  if (meta.ownerId !== userId) return null;
 
-  await upsertProblem(problem);
+  // The session id is generated here rather than read back from an INSERT,
+  // which is what lets the session rows below be written after the response.
+  const sessionId = randomUUID();
 
-  // Whatever was in progress on the previous problem is done now.
-  await db
-    .update(sessions)
-    .set({ status: "abandoned", endedAt: new Date() })
-    .where(and(eq(sessions.roomId, roomId), eq(sessions.status, "in_progress")));
+  // Registering the problem and pointing the room at it are one statement
+  // instead of two. They can't overlap as separate queries — rooms.problem_slug
+  // has a foreign key to problems.title_slug, so the problem must exist first —
+  // but inside a single statement the constraint isn't checked until the whole
+  // thing completes, so both land in one round trip. At ~510ms per write
+  // against Neon, that's half the cost of this request.
+  await db.execute(sql`
+    WITH upserted AS (
+      INSERT INTO problems (title_slug, title, difficulty, frontend_question_id)
+      VALUES (${problem.titleSlug}, ${problem.title}, ${problem.difficulty}, ${problem.frontendQuestionId})
+      ON CONFLICT (title_slug) DO UPDATE
+        SET title = EXCLUDED.title,
+            difficulty = EXCLUDED.difficulty,
+            frontend_question_id = EXCLUDED.frontend_question_id
+      RETURNING title_slug
+    )
+    UPDATE rooms
+    SET problem_slug = ${problem.titleSlug}, status = 'active', updated_at = now()
+    WHERE id = ${roomId}
+  `);
 
-  const [session] = await db
-    .insert(sessions)
-    .values({ roomId, problemSlug: problem.titleSlug })
-    .returning({ id: sessions.id });
+  const order = meta.participants.map((p) => p.userId);
 
-  await db
-    .update(rooms)
-    .set({ problemSlug: problem.titleSlug, status: "active", updatedAt: new Date() })
-    .where(eq(rooms.id, roomId));
+  // Redis writes, batched by what depends on what. setTurnOrder and the live
+  // state reset touch different keys; startTurn has to follow the reset,
+  // because the reset clears the very turn fields it sets.
+  const [, docVersion] = await Promise.all([
+    roomState.setTurnOrder(roomId, order),
+    roomState.resetLiveStateForSession(roomId, sessionId, starterCode, starterLanguage),
+  ]);
 
-  const activeParticipants = await db
-    .select({ userId: roomParticipants.userId })
-    .from(roomParticipants)
-    .where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)))
-    .orderBy(roomParticipants.joinedAt);
+  await Promise.all([
+    // A new problem replaces the document outright — tell every connected
+    // editor to reset onto it rather than waiting for their next poll.
+    roomState.publishEditorEvent(roomId, {
+      type: "doc",
+      version: docVersion,
+      code: starterCode,
+      language: starterLanguage,
+    }),
+    // Written straight over the record we already hold, rather than
+    // invalidating it — that keeps the getRoom below on the fast path instead
+    // of sending it back to Postgres.
+    roomState.setCachedRoomMeta(roomId, { ...meta, problem, updatedAt: Date.now() }),
+    order.length > 0
+      ? roomState.startTurn(roomId, order[0], 1, meta.turnDurationSeconds * 1000)
+      : Promise.resolve(),
+  ]);
 
-  const order = activeParticipants.map((p) => p.userId);
-  await roomState.setTurnOrder(roomId, order);
-  const docVersion = await roomState.resetLiveStateForSession(
-    roomId,
-    session.id,
-    starterCode,
-    starterLanguage
-  );
-
-  // A new problem replaces the document outright — tell every connected
-  // editor to reset onto it rather than waiting for their next poll.
-  await roomState.publishEditorEvent(roomId, {
-    type: "doc",
-    version: docVersion,
-    code: starterCode,
-    language: starterLanguage,
-  });
-
-  if (order.length > 0) {
-    await roomState.startTurn(roomId, order[0], 1, roomRow.turnDurationSeconds * 1000);
-  }
+  // Session bookkeeping is history — nothing on screen reads it, so it runs
+  // after the response instead of adding two more ~510ms writes to it.
+  persistSessionChange(roomId, problem.titleSlug, sessionId);
 
   return (await getRoom(roomId)) ?? null;
+}
+
+// Closes out whatever session was in progress and opens the new one. Deferred
+// past the response; the abandon must precede the insert or it would abandon
+// the session it is about to create.
+function persistSessionChange(
+  roomId: string,
+  problemSlug: string,
+  sessionId: string
+): void {
+  runAfterResponse(async () => {
+    await db
+      .update(sessions)
+      .set({ status: "abandoned", endedAt: new Date() })
+      .where(and(eq(sessions.roomId, roomId), eq(sessions.status, "in_progress")));
+    await db.insert(sessions).values({ id: sessionId, roomId, problemSlug });
+  });
 }
 
 // Fast path for the debounced editor autosave — writes only to Redis.
@@ -316,15 +372,21 @@ export async function updateRoomCode(
 
 async function endCurrentTurn(
   roomId: string,
-  result: "passed_turn" | "timed_out"
+  result: "passed_turn" | "timed_out",
+  knownMeta?: roomState.CachedRoomMeta
 ): Promise<void> {
-  const [roomRow, live] = await Promise.all([
-    db.query.rooms.findFirst({ where: eq(rooms.id, roomId) }),
+  const [meta, live] = await Promise.all([
+    knownMeta ? Promise.resolve(knownMeta) : getRoomMeta(roomId),
     roomState.getLiveState(roomId),
   ]);
-  if (!roomRow || !live.currentTurnUserId || !live.sessionId) return;
+  if (!meta || !live.currentTurnUserId || !live.sessionId) return;
 
-  await db.insert(turns).values({
+  // Rotate first, then record. The turn record is history — nobody is waiting
+  // on it — whereas the rotation is the entire point of the request, so it
+  // shouldn't queue behind a ~250ms Postgres insert.
+  await roomState.advanceTurn(roomId, meta.turnDurationSeconds * 1000);
+
+  recordFinishedTurn({
     sessionId: live.sessionId,
     playerId: live.currentTurnUserId,
     turnNumber: live.turnNumber,
@@ -333,8 +395,30 @@ async function endCurrentTurn(
     startedAt: live.turnStartedAt ? new Date(live.turnStartedAt) : new Date(),
     endedAt: new Date(),
   });
+}
 
-  await roomState.advanceTurn(roomId, roomRow.turnDurationSeconds * 1000);
+// Runs work once the response has already gone out. Reserved for writes
+// nothing on screen reads back — history and durability — because a Neon
+// write costs ~510ms and there's no reason for a button press to wait on one.
+// `after` keeps the work alive past the response on platforms that would
+// otherwise freeze the function the moment it returns.
+function runAfterResponse(work: () => Promise<unknown>): void {
+  const run = () =>
+    work().catch(() => {
+      // Best-effort by design. Live state lives in Redis, so a lost write
+      // here costs history, not correctness of the running room.
+    });
+  try {
+    after(run);
+  } catch {
+    // Outside a request context (a script, a test) `after` throws — just run it.
+    void run();
+  }
+}
+
+// Writes a completed turn to the history table without holding up the response.
+function recordFinishedTurn(row: typeof turns.$inferInsert): void {
+  runAfterResponse(() => db.insert(turns).values(row));
 }
 
 // Called by the current turn holder to voluntarily hand off.
@@ -347,9 +431,9 @@ export async function passTurn(roomId: string, userId: string): Promise<Room | n
 }
 
 // Owner-only: changes take effect starting with the next turn, not
-// retroactively. The ownership check is folded into the UPDATE's WHERE
-// clause (rather than a separate findFirst beforehand) so this is one DB
-// round trip instead of two before the getRoom() refetch.
+// retroactively. The ownership check is folded into the UPDATE's WHERE clause
+// so there's no separate lookup first, and the cached record is patched
+// rather than dropped so the getRoom below stays on the fast path.
 export async function setTurnDuration(
   roomId: string,
   userId: string,
@@ -359,23 +443,36 @@ export async function setTurnDuration(
     throw new Error(`turnDurationSeconds must be between ${MIN_TURN_SECONDS} and ${MAX_TURN_SECONDS}`);
   }
 
-  const [updated] = await db
-    .update(rooms)
-    .set({ turnDurationSeconds: Math.round(seconds), updatedAt: new Date() })
-    .where(and(eq(rooms.id, roomId), eq(rooms.ownerId, userId)))
-    .returning({ id: rooms.id });
-  if (!updated) return null;
+  const meta = await getRoomMeta(roomId);
+  if (!meta || meta.ownerId !== userId) return null;
+
+  const turnDurationSeconds = Math.round(seconds);
+  // The durable write and the cache update go out together. This one write is
+  // deliberately still on the response path: the cached record is rebuilt from
+  // Postgres whenever someone joins or leaves, so a turn length that only
+  // existed in Redis could quietly revert.
+  await Promise.all([
+    db
+      .update(rooms)
+      .set({ turnDurationSeconds, updatedAt: new Date() })
+      .where(eq(rooms.id, roomId)),
+    roomState.setCachedRoomMeta(roomId, {
+      ...meta,
+      turnDurationSeconds,
+      updatedAt: Date.now(),
+    }),
+  ]);
 
   return (await getRoom(roomId)) ?? null;
 }
 
-// Owner-only: freezes the current turn's countdown where it stands.
+// Owner-only: freezes the current turn's countdown where it stands. The
+// ownership check reads the cached record instead of Postgres — this is a
+// button press, and it used to spend a full round trip just to learn who owns
+// the room before doing anything.
 export async function pauseTurn(roomId: string, userId: string): Promise<Room | null> {
-  const roomRow = await db.query.rooms.findFirst({
-    where: eq(rooms.id, roomId),
-    columns: { ownerId: true },
-  });
-  if (!roomRow || roomRow.ownerId !== userId) return null;
+  const meta = await getRoomMeta(roomId);
+  if (!meta || meta.ownerId !== userId) return null;
 
   const result = await roomState.pauseTurn(roomId);
   if (!result) return null;
@@ -385,11 +482,8 @@ export async function pauseTurn(roomId: string, userId: string): Promise<Room | 
 
 // Owner-only: resumes a paused turn with whatever time was left on the clock.
 export async function resumeTurn(roomId: string, userId: string): Promise<Room | null> {
-  const roomRow = await db.query.rooms.findFirst({
-    where: eq(rooms.id, roomId),
-    columns: { ownerId: true },
-  });
-  if (!roomRow || roomRow.ownerId !== userId) return null;
+  const meta = await getRoomMeta(roomId);
+  if (!meta || meta.ownerId !== userId) return null;
 
   const result = await roomState.resumeTurn(roomId);
   if (!result) return null;
@@ -405,20 +499,26 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
 
   await roomState.removePresence(roomId, userId);
 
-  const [roomRow, order, live] = await Promise.all([
-    db.query.rooms.findFirst({ where: eq(rooms.id, roomId) }),
+  // Only turnDurationSeconds and "does this room exist" are needed here, and
+  // neither is affected by the row we just updated — so the cached record is
+  // fine, and saves a round trip on the way out the door.
+  const [meta, order, live] = await Promise.all([
+    getRoomMeta(roomId),
     roomState.getTurnOrder(roomId),
     roomState.getLiveState(roomId),
   ]);
 
-  if (roomRow && order.includes(userId)) {
+  if (meta && order.includes(userId)) {
     if (live.currentTurnUserId === userId) {
       const stillQueued = order.filter((id) => id !== userId);
       if (stillQueued.length === 0) {
         await roomState.clearCurrentTurn(roomId);
       } else {
+        // Rotate off the (still-present) order first so the "next after
+        // userId" math is correct, then drop them from the queue below.
+        await roomState.advanceTurn(roomId, meta.turnDurationSeconds * 1000);
         if (live.sessionId) {
-          await db.insert(turns).values({
+          recordFinishedTurn({
             sessionId: live.sessionId,
             playerId: userId,
             turnNumber: live.turnNumber,
@@ -428,9 +528,6 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
             endedAt: new Date(),
           });
         }
-        // Rotate off the (still-present) order first so the "next after
-        // userId" math is correct, then drop them from the queue below.
-        await roomState.advanceTurn(roomId, roomRow.turnDurationSeconds * 1000);
       }
     }
     await roomState.removeFromTurnOrder(roomId, userId);
@@ -443,6 +540,9 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
 
   if (remaining.length === 0) {
     await db.delete(rooms).where(eq(rooms.id, roomId)); // cascades participants/sessions/turns
-    await roomState.clearRoomState(roomId);
+    await roomState.clearRoomState(roomId); // includes the cached record
+  } else {
+    // The participant list changed for everyone still here.
+    await roomState.invalidateRoomMeta(roomId);
   }
 }
