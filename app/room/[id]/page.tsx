@@ -99,9 +99,38 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     params.then((p) => setRoomId(p.id));
   }, [params]);
 
+  // Anyone who is no longer in this room belongs on the dashboard, not on a
+  // page they can't act on. That covers more than the Leave button: leaving
+  // from a second tab, being in a room that got torn down when the last
+  // person left, or opening a room you were never part of.
+  //
+  // 403 (not a member) and 404 (no such room) are the server saying exactly
+  // that. Other failures are treated as transient and left to the next poll —
+  // a blip shouldn't eject anyone mid-session.
+  const departedRef = useRef(false);
+  const goToDashboard = useCallback(() => {
+    if (departedRef.current) return;
+    departedRef.current = true;
+    // replace, not push: the room is behind them now, and the back button
+    // shouldn't walk them into a page that will only bounce them out again.
+    router.replace("/dashboard");
+  }, [router]);
+
+  const departedFromResponse = useCallback(
+    (res: Response) => {
+      if (res.status === 403 || res.status === 404) {
+        goToDashboard();
+        return true;
+      }
+      return false;
+    },
+    [goToDashboard]
+  );
+
   const fetchRoom = useCallback(async () => {
-    if (!roomId) return;
+    if (!roomId || departedRef.current) return;
     const res = await fetch(`/api/rooms/${roomId}`);
+    if (departedFromResponse(res)) return;
     if (res.ok) {
       const { room: r } = await res.json();
       setRoom((prev) => ({
@@ -113,14 +142,15 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         ...r,
       }));
     }
-  }, [roomId]);
+  }, [roomId, departedFromResponse]);
 
   // Turn state, presence and media. The editor's contents deliberately do not
   // come through here — they arrive push-style over the shared-editor event
   // stream, which is far faster than this poll and would only be fought by it.
   const syncState = useCallback(async () => {
-    if (!roomId) return;
+    if (!roomId || departedRef.current) return;
     const res = await fetch(`/api/rooms/${roomId}/sync`);
+    if (departedFromResponse(res)) return;
     if (!res.ok) return;
 
     const data = await res.json();
@@ -143,7 +173,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           }
         : prev
     );
-  }, [roomId]);
+  }, [roomId, departedFromResponse]);
 
   useEffect(() => {
     fetchRoom();
@@ -245,8 +275,15 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
   async function handleLeaveRoom() {
     if (!roomId) return;
-    await fetch(`/api/rooms/${roomId}/leave`, { method: "POST" });
-    router.push("/dashboard");
+    try {
+      await fetch(`/api/rooms/${roomId}/leave`, { method: "POST" });
+    } catch {
+      // They asked to leave; stranding them here on a network blip is the
+      // worse outcome. Presence lapses on its own within seconds and the
+      // turn times out normally, so the room recovers without this request.
+    } finally {
+      goToDashboard();
+    }
   }
 
   async function handlePassTurn() {

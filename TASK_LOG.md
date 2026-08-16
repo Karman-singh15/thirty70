@@ -834,7 +834,7 @@ model. The remote-cursor decorations and the in-place patching (that the
 reader's scroll really does hold still while someone types above them)
 are unproven in practice. Same standing caveat as the WebRTC entries.
 
-**Known limitations:** each SSE connection holds a Redis connection for
+**Known limitations (shared editor):** each SSE connection holds a Redis connection for
 as long as it's open, which is fine for practice rooms but is the first
 thing that would need pooling at scale. Deployed to a platform with a
 function timeout, the stream will be cut at that limit — EventSource
@@ -842,3 +842,54 @@ reconnects and the snapshot makes that harmless, but it means a reconnect
 every N minutes. And the writer's own cursor is the only one shared;
 readers' cursors aren't, deliberately, since broadcasting those would
 cost a membership lookup per move.
+
+---
+
+## Send anyone who is no longer in a room to the dashboard
+
+**Date:** 2026-08-16
+
+**Task:** You asked that a user who leaves be redirected to the dashboard.
+
+**The Leave button already did that**, so the work was in the cases it
+didn't cover — every other way someone stops being in a room:
+- Leaving from a second tab. That tab kept polling, got `403 Not a
+  member` every 1.5s, and sat on a room it could no longer act on.
+- The room being torn down (it's deleted when the last person leaves).
+  Any stale session polling it got `404` forever.
+- Opening a room you were never in, or a dead invite URL — `fetchRoom`
+  quietly did nothing, leaving "Loading room..." on screen permanently.
+
+All three had the same root cause: `fetchRoom` and `syncState` both did
+`if (!res.ok) return;`, throwing away the server's answer.
+
+**What changed** (all in `app/room/[id]/page.tsx`):
+- New `goToDashboard`, guarded by a ref so concurrent pollers can't fire
+  the navigation twice, used by every exit path. It uses
+  `router.replace` rather than `push` — the room is behind them, and the
+  back button shouldn't walk them into a page that only bounces them out
+  again.
+- New `departedFromResponse`: 403 and 404 mean "you are not in this
+  room" and redirect. Deliberately nothing else — a 500 or a network
+  blip is treated as transient and left to the next poll, so a hiccup
+  can't eject someone mid-session.
+- `fetchRoom` and `syncState` both run it, and both bail early once
+  departed so the 1.5s interval stops doing work during the navigation.
+- `handleLeaveRoom` now redirects from a `finally`, so a failed leave
+  request doesn't strand the user in the room they asked to leave.
+  Presence lapses within ~10s and the turn times out normally, so the
+  room recovers on its own without that request.
+
+**Verified:** clean `tsc`, `npm run build`, `eslint` unchanged at the two
+known pre-existing `page.tsx` errors. A throwaway script exercised the
+real `createRoom`/`joinRoom`/`leaveRoom` against live Neon and Upstash,
+reproducing exactly the checks `GET /api/rooms/[id]` makes — 9/9: a
+leaver gets 403 while someone still in the room keeps getting 200 (so
+nobody is ejected by *someone else* leaving), the last person out leaves
+a room that returns 404, a stale session for that deleted room also gets
+404 rather than hanging, and a non-member opening an existing room gets
+403.
+
+**Not verified in a browser:** the navigation itself. The redirect
+triggers are proven; that `router.replace` lands on the dashboard from
+each of these paths is not.
