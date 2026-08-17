@@ -2,6 +2,9 @@
 
 import Editor, { OnMount } from "@monaco-editor/react";
 import { Lock, Pencil, Users, WifiOff } from "lucide-react";
+// Imported for its side effect: repoints the Monaco loader at our own copy.
+// Must be in place before <Editor> below first mounts.
+import "@/lib/monacoSetup";
 
 interface CodeEditorProps {
   language: string;

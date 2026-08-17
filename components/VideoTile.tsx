@@ -25,43 +25,75 @@ export function VideoTile({
   connectionState,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
 
+  // A peer's audio and video deliberately go to two different elements.
+  //
+  // The connection carries both kinds from the moment it's established, so a
+  // peer with their camera off is still sending a video track — one that
+  // produces no frames. A <video> bound to a stream like that never leaves
+  // readyState 0 and so never starts playing, which silences the audio track
+  // sitting in the same element: the mic appears dead until that peer turns
+  // their camera on and frames finally start arriving. Giving audio its own
+  // <audio> element decouples it from whether any picture exists.
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
 
-    el.srcObject = stream ?? null;
-    if (!stream) return;
+    const videoTracks = stream?.getVideoTracks() ?? [];
+    el.srcObject = videoTracks.length > 0 ? new MediaStream(videoTracks) : null;
+    if (videoTracks.length > 0) el.play().catch(() => {});
+  }, [stream]);
 
-    // The element is mounted muted so video is always allowed to autoplay.
-    // Unmuting a remote peer is what browsers gate behind a user gesture, and
-    // arriving in a room by navigation doesn't always count as one — so try
-    // it, and on rejection fall back to muted playback (keeping the *picture*)
-    // and offer a button to turn sound on under a real click.
-    if (isSelf) {
-      el.play().catch(() => {});
+  // Self is video-only on purpose — playing your own mic back is feedback.
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || isSelf) return;
+
+    const audioTracks = stream?.getAudioTracks() ?? [];
+    if (audioTracks.length === 0) {
+      el.srcObject = null;
       return;
     }
+    el.srcObject = new MediaStream(audioTracks);
 
+    // Autoplaying a remote peer *with sound* is what browsers gate behind a
+    // user gesture, and arriving in a room by navigation doesn't always count
+    // as one — so try it, and on rejection offer a button to turn sound on
+    // under a real click. The picture is unaffected either way; its element
+    // is permanently muted.
     el.muted = false;
     el.play()
       .then(() => setAudioBlocked(false))
-      .catch(() => {
-        el.muted = true;
-        setAudioBlocked(true);
-        el.play().catch(() => {});
-      });
+      .catch(() => setAudioBlocked(true));
   }, [stream, isSelf]);
 
   function enableAudio() {
-    const el = videoRef.current;
-    if (!el) return;
+    const el = audioRef.current;
+    if (!el || !el.srcObject) return;
     el.muted = false;
     el.play()
       .then(() => setAudioBlocked(false))
       .catch(() => {});
   }
+
+  // Autoplay-with-sound is normally refused the first time a peer's audio
+  // arrives — nothing about connecting to a room counts as the user gesture
+  // browsers require, so the audio element above stays paused. Rather
+  // than leave it stuck until someone notices the small Unmute badge, the
+  // very next click or keypress anywhere on the page — including e.g. the
+  // mic/camera buttons, which is what people reach for first — retries it.
+  useEffect(() => {
+    if (!audioBlocked) return;
+    const unlock = () => enableAudio();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, [audioBlocked]);
 
   const showVideo = cameraOn && !!stream;
 
@@ -82,21 +114,23 @@ export function VideoTile({
         isOnline ? "ring-zinc-800" : "ring-zinc-800/50"
       }`}
     >
-      {/* Stays mounted whenever there's a stream, even with the camera off —
-          a remote tile carries that peer's audio on the same element. */}
+      {/* Carries the picture only, and is muted for good: a peer's sound
+          lives on the <audio> element below so it doesn't depend on frames
+          arriving. Mounted whenever there's a stream at all, so the element
+          is already in place when the camera comes on. */}
       {stream && (
         <video
           ref={videoRef}
           autoPlay
           playsInline
-          // Always mounted muted so autoplay is never refused; the effect
-          // above unmutes remote peers once it's allowed to.
           muted
           className={`absolute inset-0 h-full w-full object-cover ${
             isSelf ? "[transform:scaleX(-1)]" : ""
           } ${showVideo ? "" : "opacity-0"}`}
         />
       )}
+
+      {!isSelf && stream && <audio ref={audioRef} autoPlay />}
 
       {!showVideo && avatar}
 

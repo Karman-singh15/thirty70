@@ -1,15 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { SignalPayload } from "@/lib/editorDoc";
 
 // Peer-to-peer audio/video between everyone in a room (full mesh — fine for
 // the handful of people a practice room holds; it would need an SFU well
 // before it needed anything else).
 //
-// Only the handshake goes through our server, via /api/rooms/[id]/signal.
-// The media itself flows browser-to-browser, so polling latency on the
-// signaling channel affects how long a connection takes to establish (a
-// couple of seconds), not the quality of the call once it's up.
+// Only the handshake goes through our server, via /api/rooms/[id]/signal to
+// send and the room's SSE stream to receive (see receiveSignal below) — the
+// media itself flows browser-to-browser once that's done.
 
 const ICE_SERVERS: RTCIceServer[] = [
   // Google's public STUN. Enough for peers to discover their public address
@@ -19,24 +19,24 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
 ];
 
-// Poll hard while a handshake is in flight, back off once everyone's connected.
-const POLL_CONNECTING_MS = 700;
-const POLL_IDLE_MS = 2500;
 const OUTBOX_FLUSH_MS = 200;
 
-type SignalType = "hello" | "offer" | "answer" | "ice";
+// Signaling is fire-and-forget, so an opening offer can simply go missing —
+// the far side was still loading, or its event stream was mid-reconnect and
+// the queued copy had already been drained by an earlier connection. Nothing
+// else recovers from that: a connection that never got a reply sits at
+// connectionState "new" forever, never reaching "failed", so the teardown
+// below never fires and the reconciliation effect has no reason to re-run.
+// The watchdog re-sends the opening signal until the handshake takes.
+const HANDSHAKE_RETRY_MS = 4000;
+// Bounded so a genuinely unreachable peer (no TURN on a locked-down network)
+// stops generating signaling traffic instead of retrying for the whole session.
+const MAX_HANDSHAKE_ATTEMPTS = 5;
 
 interface OutboundSignal {
   to: string;
   session: string;
-  type: SignalType;
-  data: unknown;
-}
-
-interface InboundSignal {
-  from: string;
-  session: string;
-  type: SignalType;
+  kind: SignalPayload["kind"];
   data: unknown;
 }
 
@@ -73,6 +73,10 @@ export function useWebRTC({
     Record<string, RTCPeerConnectionState>
   >({});
   const peersRef = useRef(new Map<string, PeerEntry>());
+  // Counted per peer rather than per connection, so tearing a peer down and
+  // rebuilding it doesn't reset the budget and loop forever. Cleared when the
+  // peer connects, or when they leave the room.
+  const handshakeAttemptsRef = useRef(new Map<string, number>());
   const outboxRef = useRef<OutboundSignal[]>([]);
   // Regenerated on every page load, so a refresh is distinguishable from the
   // same browser simply still being here. Generated lazily on first send
@@ -97,6 +101,14 @@ export function useWebRTC({
     roomId,
     myUserId,
   });
+
+  // Debugging handle: lets you inspect live peer connections and their
+  // transceivers from the console (`__rtcPeers`), which is otherwise
+  // unreachable from outside the hook. In an effect rather than in render
+  // because reading a ref during render is not allowed.
+  useEffect(() => {
+    (window as unknown as { __rtcPeers?: unknown }).__rtcPeers = peersRef.current;
+  }, []);
 
   // Declared before the effects that read these refs, so within a single
   // commit they're already current by the time those effects run.
@@ -184,7 +196,7 @@ export function useWebRTC({
       //
       // Declaring both kinds up front (even with no track yet) is what makes
       // turning a camera on later a plain replaceTrack() with no second
-      // offer/answer round trip through the polling channel.
+      // offer/answer round trip through the signaling channel.
       if (initiate) {
         pc.addTransceiver("audio", { direction: "sendrecv" });
         pc.addTransceiver("video", { direction: "sendrecv" });
@@ -198,12 +210,12 @@ export function useWebRTC({
       };
       peersRef.current.set(peerId, entry);
 
-      if (announce) send({ to: peerId, type: "hello", data: {} });
+      if (announce) send({ to: peerId, kind: "hello", data: {} });
 
       applyTracks(pc);
 
       pc.onicecandidate = (e) => {
-        if (e.candidate) send({ to: peerId, type: "ice", data: e.candidate.toJSON() });
+        if (e.candidate) send({ to: peerId, kind: "ice", data: e.candidate.toJSON() });
       };
 
       pc.ontrack = (e) => {
@@ -219,9 +231,13 @@ export function useWebRTC({
 
       pc.onconnectionstatechange = () => {
         setConnectionStates((prev) => ({ ...prev, [peerId]: pc.connectionState }));
+        if (pc.connectionState === "connected") {
+          handshakeAttemptsRef.current.delete(peerId);
+        }
         if (pc.connectionState === "failed") {
-          // Tear it down; the peer-reconciliation effect rebuilds it on its
-          // next pass, which re-runs the whole handshake from scratch.
+          // Tear it down and leave the entry missing. The watchdog below is
+          // what notices a peer that's present but has no connection and
+          // rebuilds it, re-running the handshake from scratch.
           closePeer(peerId);
         }
       };
@@ -231,7 +247,7 @@ export function useWebRTC({
           try {
             await pc.setLocalDescription(await pc.createOffer());
             if (pc.localDescription) {
-              send({ to: peerId, type: "offer", data: pc.localDescription.toJSON() });
+              send({ to: peerId, kind: "offer", data: pc.localDescription.toJSON() });
             }
           } catch {
             // Connection died mid-negotiation; failed-state handler cleans up.
@@ -245,7 +261,7 @@ export function useWebRTC({
   );
 
   const handleSignal = useCallback(
-    async (signal: InboundSignal) => {
+    async (signal: SignalPayload) => {
       const { myUserId: me } = identityRef.current;
       if (!me) return;
 
@@ -261,23 +277,35 @@ export function useWebRTC({
       if (!entry) {
         // Build on demand — for a hello, or for an offer from someone we
         // haven't seen in presence yet (the sender won't spontaneously retry).
-        if (signal.type !== "hello" && signal.type !== "offer") return;
+        if (signal.kind !== "hello" && signal.kind !== "offer") return;
         // Whoever holds the lower id offers, so the two sides can't both
         // initiate. Replying to an offer always means we answer.
-        const initiate = signal.type === "hello" && me < signal.from;
+        const initiate = signal.kind === "hello" && me < signal.from;
         entry = createPeer(signal.from, initiate, { remoteSession: signal.session });
       } else if (!entry.remoteSession) {
         entry.remoteSession = signal.session;
       }
 
-      // A hello carries no SDP — it exists purely to establish/refresh the
-      // pairing, which the branch above has now done.
-      if (signal.type === "hello") return;
-
       const { pc } = entry;
 
+      // A hello carries no SDP — it exists purely to establish/refresh the
+      // pairing, which the branch above has now done. The one exception is a
+      // repeat hello from someone we've already offered to and heard nothing
+      // back from: that's their watchdog telling us the offer never landed,
+      // so replay it instead of both sides waiting on each other.
+      if (signal.kind === "hello") {
+        if (
+          pc.signalingState === "have-local-offer" &&
+          pc.localDescription &&
+          !pc.remoteDescription
+        ) {
+          send({ to: signal.from, kind: "offer", data: pc.localDescription.toJSON() });
+        }
+        return;
+      }
+
       try {
-        if (signal.type === "offer") {
+        if (signal.kind === "offer") {
           await pc.setRemoteDescription(signal.data as RTCSessionDescriptionInit);
           // Must happen between setRemoteDescription and createAnswer: this is
           // the only moment where flipping the freshly-created transceivers to
@@ -285,9 +313,9 @@ export function useWebRTC({
           applyTracks(pc);
           await pc.setLocalDescription(await pc.createAnswer());
           if (pc.localDescription) {
-            send({ to: signal.from, type: "answer", data: pc.localDescription.toJSON() });
+            send({ to: signal.from, kind: "answer", data: pc.localDescription.toJSON() });
           }
-        } else if (signal.type === "answer") {
+        } else if (signal.kind === "answer") {
           if (pc.signalingState !== "have-local-offer") return;
           await pc.setRemoteDescription(signal.data as RTCSessionDescriptionInit);
         } else {
@@ -324,6 +352,9 @@ export function useWebRTC({
     for (const peerId of Array.from(peersRef.current.keys())) {
       if (!desired.has(peerId)) closePeer(peerId);
     }
+    for (const peerId of Array.from(handshakeAttemptsRef.current.keys())) {
+      if (!desired.has(peerId)) handshakeAttemptsRef.current.delete(peerId);
+    }
 
     for (const peerId of desired) {
       if (!peersRef.current.has(peerId)) {
@@ -331,6 +362,50 @@ export function useWebRTC({
       }
     }
   }, [peerKey, roomId, myUserId, createPeer, closePeer]);
+
+  // Retries handshakes that never got a reply, and rebuilds peers that are in
+  // the room but have no connection (torn down after a failure, above).
+  // Anything past setRemoteDescription is left alone: from there ICE owns the
+  // outcome and does its own retrying, ending at "failed" if it can't.
+  useEffect(() => {
+    if (!roomId || !myUserId) return;
+    const desired = peerKey ? peerKey.split(",") : [];
+    if (desired.length === 0) return;
+
+    const interval = setInterval(() => {
+      for (const peerId of desired) {
+        const attempts = handshakeAttemptsRef.current.get(peerId) ?? 0;
+        if (attempts >= MAX_HANDSHAKE_ATTEMPTS) continue;
+
+        const entry = peersRef.current.get(peerId);
+        if (!entry) {
+          handshakeAttemptsRef.current.set(peerId, attempts + 1);
+          createPeer(peerId, myUserId < peerId, { announce: true });
+          continue;
+        }
+
+        const { pc } = entry;
+        if (pc.connectionState === "connected") {
+          handshakeAttemptsRef.current.delete(peerId);
+          continue;
+        }
+        if (pc.remoteDescription) continue;
+
+        handshakeAttemptsRef.current.set(peerId, attempts + 1);
+        if (pc.signalingState === "have-local-offer" && pc.localDescription) {
+          // Re-send the same offer rather than building a new one: the far
+          // side simply never saw it, and replaying it is idempotent there.
+          send({ to: peerId, kind: "offer", data: pc.localDescription.toJSON() });
+        } else {
+          // We're the answering side with nothing to answer — nudge them to
+          // offer again.
+          send({ to: peerId, kind: "hello", data: {} });
+        }
+      }
+    }, HANDSHAKE_RETRY_MS);
+
+    return () => clearInterval(interval);
+  }, [peerKey, roomId, myUserId, createPeer, send]);
 
   // Swap tracks into the existing senders whenever the local camera/mic
   // toggles. No renegotiation needed — the transceivers already exist.
@@ -357,41 +432,34 @@ export function useWebRTC({
     return () => clearInterval(interval);
   }, [roomId]);
 
-  // Poll for inbound signals, fast while anything is still connecting.
-  useEffect(() => {
-    if (!roomId || !myUserId) return;
+  // Inbound signals arrive pushed (see receiveSignal, wired to the room's SSE
+  // stream by the caller) rather than polled. They're queued and drained one
+  // at a time rather than handled inline, so a burst of ICE candidates
+  // arriving as separate SSE messages still goes through handleSignal in
+  // order instead of racing each other against the same peer connection.
+  const inboxRef = useRef<SignalPayload[]>([]);
+  const draining = useRef(false);
 
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-
-    async function tick() {
-      try {
-        const res = await fetch(`/api/rooms/${roomId}/signal`);
-        if (res.ok) {
-          const { signals } = (await res.json()) as { signals: InboundSignal[] };
-          for (const signal of signals) {
-            if (cancelled) return;
-            await handleSignal(signal);
-          }
-        }
-      } catch {
-        // Transient network failure — just try again on the next tick.
+  const drainInbox = useCallback(async () => {
+    if (draining.current) return;
+    draining.current = true;
+    try {
+      while (inboxRef.current.length > 0) {
+        const next = inboxRef.current.shift();
+        if (next) await handleSignal(next);
       }
-
-      if (cancelled) return;
-      const connecting = Array.from(peersRef.current.values()).some(
-        (p) => p.pc.connectionState !== "connected"
-      );
-      timer = setTimeout(tick, connecting ? POLL_CONNECTING_MS : POLL_IDLE_MS);
+    } finally {
+      draining.current = false;
     }
+  }, [handleSignal]);
 
-    tick();
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [roomId, myUserId, handleSignal]);
+  const receiveSignal = useCallback(
+    (signal: SignalPayload) => {
+      inboxRef.current.push(signal);
+      void drainInbox();
+    },
+    [drainInbox]
+  );
 
   // Tear every connection down on unmount (leaving the room, navigating away).
   useEffect(() => {
@@ -407,5 +475,5 @@ export function useWebRTC({
     };
   }, []);
 
-  return { remoteStreams, connectionStates };
+  return { remoteStreams, connectionStates, receiveSignal };
 }

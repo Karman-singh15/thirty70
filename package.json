@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/copy-monaco.mjs",
+    "predev": "node scripts/copy-monaco.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-monaco.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -18,6 +21,7 @@
     "drizzle-orm": "^0.45.2",
     "ioredis": "^6.0.0",
     "lucide-react": "^1.28.0",
+    "monaco-editor": "^0.56.0",
     "nanoid": "^5.1.16",
     "next": "16.2.12",
     "postgres": "^3.4.9",

@@ -1175,3 +1175,187 @@ flagged lines belong to this change).
 
 **Not verified in a browser:** same gap as the change above — two real tabs,
 to confirm WebRTC handshakes still complete normally under the cached check.
+
+---
+
+## Mic only became audible after turning the camera on
+
+**Task:** You reported that your mic did nothing until you toggled your
+camera on — after that toggle, audio worked fine for the rest of the session.
+
+**Cause:** `VideoTile` put a peer's audio and video on the *same* `<video>`
+element. The peer connection carries both kinds from the moment it's
+established (`useWebRTC` declares an audio and a video transceiver up front so
+toggling a camera later is a bare `replaceTrack`), so a peer with their camera
+off is still sending a video track — one that simply produces no frames. A
+media element bound to a MediaStream that contains a video track won't advance
+past `readyState 0` until frames actually arrive, and until it starts playing
+it plays *nothing* — including the audio track sitting alongside it. So the
+mic was flowing over the wire the whole time and just never got played out.
+Turning the camera on delivered the first frames, playback finally started,
+and the audio came with it — which is exactly why the camera looked like the
+thing that "fixed" the mic.
+
+**What changed:**
+- `components/VideoTile.tsx` — remote audio now plays on its own `<audio>`
+  element, fed a MediaStream built from only the stream's audio tracks; the
+  `<video>` element gets only the video tracks and is muted permanently. With
+  no video track gating it, the audio element starts as soon as sound arrives,
+  independent of whether anyone's camera is on. The self tile is unchanged in
+  behaviour — it stays video-only, since playing your own mic back is feedback.
+- The autoplay-blocked fallback (the Unmute badge and the first-gesture retry)
+  now targets the audio element. It also got simpler: there's no longer a
+  "fall back to muted playback so at least the picture shows" step, because
+  the picture is on a separate, always-muted element that was never at risk.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint` on the changed file.
+
+**Not verified in a browser:** two real tabs with mic on and camera off, to
+confirm audio is now audible without touching the camera.
+
+---
+
+## Monaco loaded from a CDN, so its web workers never spawned
+
+**Task:** Three Monaco errors in the dev-server log — `Could not create web
+worker(s)`, `Uncaught TypeError: url.startsWith is not a function` (twice), and
+`Duplicate definition of module 'vs/cpp-...'`.
+
+**Cause:** all three, one root. `components/CodeEditor.tsx` used
+`@monaco-editor/react` without ever calling `loader.config`, so the loader fell
+back to its pinned default and pulled Monaco from
+`cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs`. Monaco derives its worker
+URLs from the base URL it was loaded from, and a browser will not construct a
+`Worker` from a cross-origin script — so worker creation threw, Monaco caught
+it and ran the language services on the main thread instead (that's the
+"might cause UI freezes" warning, on the one thread two people are typing
+into), the same fallback path threw `url.startsWith is not a function`, and
+the AMD loader double-registered language modules. A version skew came free
+with it: the CDN was serving 0.55.1 while `node_modules` had 0.56.0, so the
+editor on screen wasn't the version in the lockfile.
+
+**What changed:**
+- `scripts/copy-monaco.mjs` (new) — vendors `monaco-editor/min/vs` into
+  `public/monaco/vs`. Version-stamped, so it's a no-op unless the installed
+  version actually changed rather than re-copying thousands of files on every
+  `npm run dev`.
+- `package.json` — `monaco-editor` promoted from an unlisted transitive peer
+  to a real dependency (we now vendor from it, so it should be pinned);
+  `postinstall`/`predev`/`prebuild` run the copy so a fresh clone just works.
+- `lib/monacoSetup.ts` (new) — `loader.config({ paths: { vs: "/monaco/vs" } })`.
+  Safe at module scope: `config()` only merges into the loader's own state
+  object and touches neither `window` nor Monaco, so it's inert during SSR.
+- `components/CodeEditor.tsx` — imports that module for its side effect.
+- `.gitignore` — `/public/monaco` is generated, not committed (27MB).
+
+I first tried bundling the workers directly
+(`new Worker(new URL("monaco-editor/esm/...", import.meta.url))`), which is the
+webpack-era idiom. Turbopack does not resolve bare package specifiers inside
+`new URL()` and the build failed with module-not-found; self-hosting the
+prebuilt AMD bundle avoids the bundler entirely and is Monaco's own documented
+setup.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, clean `next build`. Every
+AMD dependency in `editor.main.js`'s define() list plus `editor.main.css`
+serves 200 from our own origin.
+
+**Not verified in a browser:** the extension was disconnected, so I could not
+watch the three console errors disappear or confirm the workers now spawn.
+That is the one check still outstanding on this change.
+
+---
+
+## A missed WebRTC offer stranded the call permanently
+
+**Task:** Follow-up to the mic fix above. While testing that in two browsers I
+found the calls weren't connecting at all, and the reason wasn't the audio
+change — it was that the handshake had no recovery path.
+
+**Cause:** signaling is fire-and-forget. If the opening offer never reaches the
+far side — they were still loading, their event stream was mid-reconnect and
+an earlier connection had already drained the queued copy — the connection
+parks at `connectionState: "new"` and stays there for the rest of the session.
+Nothing recovers it: `"failed"` is never reached, so the teardown in
+`onconnectionstatechange` never runs, and the reconciliation effect only
+re-runs when presence, room id, or user id changes. The comment claiming the
+reconciliation effect "rebuilds it on its next pass" was wrong — there is no
+next pass. Observed live: one peer sat at
+`signalingState: "have-local-offer", remoteDescription: false` indefinitely
+while the other never sent so much as a `hello`.
+
+**What changed** (all in `hooks/useWebRTC.ts`):
+- A watchdog on a 4s interval re-sends the opening signal for any peer whose
+  connection hasn't got a reply yet, and rebuilds any peer that's in the room
+  but has no connection at all (the state a `"failed"` teardown leaves behind —
+  so that path now genuinely does get rebuilt, as its comment always claimed).
+  It replays the *existing* offer rather than creating a new one: the far side
+  simply never saw it, and replaying is idempotent there — no new ICE
+  credentials, no renegotiation churn.
+- Anything past `setRemoteDescription` is deliberately left alone. From there
+  ICE owns the outcome and does its own retrying, ending at `"failed"` if it
+  genuinely can't connect, which the existing teardown already handles.
+- Attempts are capped at 5 and counted per *peer*, not per connection, so a
+  rebuild doesn't reset the budget and spin forever. The count clears when the
+  peer connects or leaves the room. An unreachable peer (no TURN on a
+  locked-down network) goes quiet instead of signaling for the whole session.
+- A repeat `hello` from a peer we've already offered to and heard nothing back
+  from now replays the offer instead of being ignored, so the answering side's
+  nudge actually accomplishes something.
+
+**Also fixed while in here:** the `window.__rtcPeers` debug handle was being
+assigned during render, which is an eslint error (`react-hooks/refs`) and
+genuinely invalid React. Moved into a mount effect — same handle, no error.
+
+**Verified:** clean `tsc --noEmit`, clean `next build`, and `eslint .` back to
+the same 3 pre-existing problems in `app/room/[id]/page.tsx` (it was 4 with the
+render-time ref access).
+
+**Not verified in a browser:** the extension stayed disconnected, so the
+retry has not been watched actually rescuing a stranded handshake, and the
+`<audio>`/`<video>` split from the previous entry still hasn't been confirmed
+audible end to end. Both need two real tabs.
+
+---
+
+## GET /editor spent seconds in Postgres for a membership check
+
+**Task:** `GET /api/rooms/[id]/editor` was showing 4.6s and 5.7s of
+`application-code` time in the dev log, repeatedly.
+
+**Cause:** measured rather than guessed — I timed both backing stores against
+this project's own instances:
+
+| call                                   | cold   | warm                    |
+| -------------------------------------- | ------ | ----------------------- |
+| Postgres (Neon) participant lookup      | 3047ms | ~263ms, spiking to 1265ms |
+| Redis (Upstash) get                     | 28ms   | ~28ms                     |
+
+The GET handler was calling `isRoomMember`, which goes to Postgres, and
+awaiting it *before* the Redis document read rather than alongside it. So the
+endpoint paid a full Neon round trip — several seconds on a cold connection —
+before it even started fetching what it was asked for. `/signal` was moved off
+this exact check earlier for the same reason; `/editor` never was.
+
+That matters more here than the raw numbers suggest: GET /editor is the
+recovery path, the thing a client hits when it has drifted or its event stream
+never came up. It was the slowest endpoint in the app precisely when the app
+was already in trouble.
+
+**What changed** (`app/api/rooms/[id]/editor/route.ts`):
+- `GET` uses `isRoomMemberCached`, and issues it together with `getLiveState`
+  under one `Promise.all` instead of in series — so the check is ~28ms instead
+  of 263-3047ms, and overlaps the read it used to block.
+- `POST` uses `isRoomMemberCached` for its pre-turn fallback too. That branch
+  runs on *every keystroke* for as long as a room has no turn started, so it
+  was quietly putting a ~263ms Postgres round trip on the write path; the
+  existing comment dismissed it as "rare", which it isn't.
+
+Both are the same trust model already relied on elsewhere: `getRoomMeta` reads
+Redis and falls back to Postgres on a miss (repopulating as it goes), and
+`joinRoom`/`leaveRoom` invalidate it synchronously in the same request that
+changes membership. No weakening of the check, just a different read path.
+
+**Verified:** clean `tsc --noEmit`, clean `next build`, `eslint .` unchanged at
+the same 3 pre-existing problems. The store-level timings above are measured;
+the end-to-end endpoint timing is not, since reproducing it needs an
+authenticated session.

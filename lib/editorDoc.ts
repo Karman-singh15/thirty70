@@ -79,3 +79,22 @@ export interface RoomSnapshot {
 }
 
 export type RoomEvent = { type: "room"; room: RoomSnapshot };
+
+// --- WebRTC signaling ---
+//
+// Handshake messages (SDP offers/answers, ICE candidates) between two peers,
+// relayed over the same connection as everything else above instead of a
+// dedicated poll. `to` lets every client filter down to the messages actually
+// addressed to them out of what the room channel fans out to everyone.
+
+export interface SignalPayload {
+  from: string;
+  // Identifies the sender's *page load*, not the user. A refresh produces
+  // brand-new peer connections, and the remote side has no other way to tell
+  // that the connection it still holds is now pointing at a dead browser.
+  session: string;
+  kind: "hello" | "offer" | "answer" | "ice";
+  data: unknown;
+}
+
+export type SignalEvent = { type: "signal"; to: string } & SignalPayload;

@@ -8,6 +8,8 @@ import type {
   RoomParticipant,
   RoomProblemSummary,
   RoomSnapshot,
+  SignalEvent,
+  SignalPayload,
 } from "@/lib/editorDoc";
 
 // Live, ephemeral per-room state. Postgres (lib/rooms.ts) owns the durable
@@ -232,7 +234,16 @@ export async function patchCachedRoomMeta(
 // read-modify-write window and no string-offset arithmetic in Lua (whose
 // byte-based indexing would corrupt any non-ASCII character in the file).
 
-export type { CursorPosition, DocChange, EditorDoc, EditorEvent, RoomEvent, RoomSnapshot };
+export type {
+  CursorPosition,
+  DocChange,
+  EditorDoc,
+  EditorEvent,
+  RoomEvent,
+  RoomSnapshot,
+  SignalEvent,
+  SignalPayload,
+};
 
 export type CasResult =
   | { ok: true; version: number }
@@ -303,6 +314,17 @@ export async function publishEditorEvent(
 
 export async function publishRoomEvent(roomId: string, room: RoomSnapshot): Promise<void> {
   await redis.publish(roomChannel(roomId), JSON.stringify({ type: "room", room }));
+}
+
+// Handshake messages ride the same room channel as everything else — every
+// connected client gets it and filters down to the ones addressed to them,
+// same as they already do for presence and turn state.
+export async function publishSignal(
+  roomId: string,
+  to: string,
+  payload: SignalPayload
+): Promise<void> {
+  await redis.publish(roomChannel(roomId), JSON.stringify({ type: "signal", to, ...payload }));
 }
 
 // Server-side listener behind the SSE route. One Redis connection per client
@@ -527,62 +549,42 @@ export async function getMediaState(
   return { micOn, cameraOn };
 }
 
-// --- WebRTC signaling mailboxes ---
+// --- WebRTC signaling backstop ---
 //
-// Each participant gets a per-room inbox list that peers push handshake
-// messages (SDP offers/answers, ICE candidates) into. The media itself never
-// touches the server — it flows browser-to-browser — so this only carries the
-// small setup messages. Inboxes expire on their own (SIGNAL_TTL_SECONDS), so
-// there's nothing to clean up when someone disappears mid-handshake.
+// Handshake messages (SDP offers/answers, ICE candidates) are delivered live
+// over the room channel above (see publishSignal) — no more polling for them.
+// This queue exists purely as a durability net under that: it's written
+// alongside every publish and drained once when a client's stream connects
+// or reconnects, so a message published during the brief gap of an
+// EventSource reconnect (a network blip, a server restart) still arrives
+// instead of stranding that peer's handshake. A client that stays connected
+// the whole time gets each message once, live, and its queued copy just
+// expires unread (SIGNAL_TTL_SECONDS) — nothing to clean up either way.
 
-export interface SignalMessage {
-  from: string;
-  // Identifies the sender's *page load*, not the user. A refresh produces
-  // brand-new peer connections, and the remote side has no other way to tell
-  // that the connection it still holds is now pointing at a dead browser.
-  session: string;
-  type: "hello" | "offer" | "answer" | "ice";
-  data: unknown;
-}
-
-export async function pushSignals(
+export async function queueSignal(
   roomId: string,
-  messages: {
-    to: string;
-    from: string;
-    session: string;
-    type: SignalMessage["type"];
-    data: unknown;
-  }[]
+  to: string,
+  payload: SignalPayload
 ): Promise<void> {
-  if (messages.length === 0) return;
-
-  const pipeline = redis.pipeline();
-  for (const m of messages) {
-    const key = signalKey(roomId, m.to);
-    pipeline.rpush(
-      key,
-      JSON.stringify({ from: m.from, session: m.session, type: m.type, data: m.data })
-    );
-    pipeline.ltrim(key, -SIGNAL_QUEUE_MAX, -1);
-    pipeline.expire(key, SIGNAL_TTL_SECONDS);
-  }
-  await pipeline.exec();
+  const key = signalKey(roomId, to);
+  await redis
+    .pipeline()
+    .rpush(key, JSON.stringify(payload))
+    .ltrim(key, -SIGNAL_QUEUE_MAX, -1)
+    .expire(key, SIGNAL_TTL_SECONDS)
+    .exec();
 }
 
-// Reads and clears the caller's inbox in one atomic step, so a message pushed
+// Reads and clears the caller's inbox in one atomic step, so a message queued
 // mid-drain is never silently dropped.
-export async function drainSignals(
-  roomId: string,
-  userId: string
-): Promise<SignalMessage[]> {
+export async function drainSignals(roomId: string, userId: string): Promise<SignalPayload[]> {
   const key = signalKey(roomId, userId);
   const results = await redis.multi().lrange(key, 0, -1).del(key).exec();
   const raw = (results?.[0]?.[1] as string[] | undefined) ?? [];
 
   return raw.flatMap((entry) => {
     try {
-      return [JSON.parse(entry) as SignalMessage];
+      return [JSON.parse(entry) as SignalPayload];
     } catch {
       return [];
     }

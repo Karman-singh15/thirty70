@@ -2,20 +2,23 @@ import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { broadcastRoomUpdate, getRoomSnapshot, isRoomMember } from "@/lib/rooms";
 import {
+  drainSignals,
   getLiveState,
   subscribeRoomChannels,
   touchPresence,
   type EditorEvent,
   type RoomEvent,
+  type SignalEvent,
 } from "@/lib/roomState";
 
 // Server-sent events carrying everything the room needs live: the shared
-// editor's document (its own channel) and turn/participant/presence/media
-// state (a second channel, multiplexed onto this same connection and this
-// same Redis subscriber — see subscribeRoomChannels). This is what replaced
-// the old 700ms /sync poll: state reaches everyone in roughly the time of one
-// Redis publish instead of waiting out a poll interval, and Redis only gets
-// touched when something actually changes instead of on every tick.
+// editor's document, turn/participant/presence/media state, and WebRTC
+// signaling — the last two multiplexed onto this same connection and this
+// same Redis subscriber via the "room" channel (see subscribeRoomChannels).
+// This is what replaced both the old 700ms /sync poll and the /signal poll:
+// state reaches everyone in roughly the time of one Redis publish instead of
+// waiting out a poll interval, and Redis only gets touched when something
+// actually changes instead of on every tick.
 //
 // This is also what drives presence now. There's no more per-poll heartbeat
 // write — instead, this route's own keep-alive ping doubles as the presence
@@ -63,7 +66,7 @@ export async function GET(
           cleanup();
         }
       };
-      const writeEvent = (event: EditorEvent | RoomEvent) =>
+      const writeEvent = (event: EditorEvent | RoomEvent | SignalEvent) =>
         write(`data: ${JSON.stringify(event)}\n\n`);
 
       const cleanup = () => {
@@ -97,6 +100,14 @@ export async function GET(
 
       const snapshot = await getRoomSnapshot(id);
       if (snapshot) writeEvent({ type: "room", room: snapshot });
+
+      // Catches anything sent while this connection was down (a reconnect, a
+      // server restart) — see the comment on the signal queue in roomState.ts.
+      // A no-op the vast majority of the time: empty for a brand-new join,
+      // and for a live reconnect, whatever arrived live over the room channel
+      // during a previous connection.
+      const queued = await drainSignals(id, userId);
+      for (const payload of queued) writeEvent({ type: "signal", to: userId, ...payload });
 
       unsubscribe = subscribeRoomChannels(id, {
         onEditorEvent: (raw) => write(`data: ${raw}\n\n`),

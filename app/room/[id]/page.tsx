@@ -14,7 +14,7 @@ import { ResizeHandle } from "@/components/ResizeHandle";
 import { useLocalMedia } from "@/hooks/useLocalMedia";
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { useSharedEditor } from "@/hooks/useSharedEditor";
-import type { RoomSnapshot } from "@/lib/editorDoc";
+import type { RoomSnapshot, SignalEvent } from "@/lib/editorDoc";
 import { usePendingActions } from "@/hooks/usePendingActions";
 import { TopProgressBar } from "@/components/TopProgressBar";
 
@@ -216,6 +216,20 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const currentTurnUserId = room?.currentTurnUserId ?? null;
   const canEdit = currentTurnUserId === null || currentTurnUserId === myUserId;
 
+  // useWebRTC (below) needs to exist before it can receive anything, but
+  // useSharedEditor (which owns the one EventSource these signals arrive on)
+  // has to be declared before it for the other state it feeds. A ref breaks
+  // the cycle: this callback is stable from render one, and starts actually
+  // forwarding once the effect near useWebRTC below points it somewhere.
+  const webrtcSignalRef = useRef<(event: SignalEvent) => void>(() => {});
+  const handleSignalEvent = useCallback(
+    (event: SignalEvent) => {
+      if (event.to !== myUserId) return;
+      webrtcSignalRef.current(event);
+    },
+    [myUserId]
+  );
+
   // The editor's document, language and cursor, shared with everyone in the
   // room over a live event stream.
   const editor = useSharedEditor({
@@ -224,6 +238,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     canEdit,
     writerId: currentTurnUserId,
     onRoomEvent: handleRoomEvent,
+    onSignal: handleSignalEvent,
   });
 
   async function handleProblemSelect(problem: {
@@ -390,13 +405,17 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   // Connect to everyone currently present, regardless of whether they have
   // media on yet — the connection is established up front so toggling a
   // camera later is instant rather than starting a handshake from scratch.
-  const { remoteStreams, connectionStates } = useWebRTC({
+  const { remoteStreams, connectionStates, receiveSignal } = useWebRTC({
     roomId,
     myUserId: myUserId ?? null,
     peerIds: room?.onlineUserIds ?? [],
     audioTrack,
     videoTrack,
   });
+
+  useEffect(() => {
+    webrtcSignalRef.current = receiveSignal;
+  }, [receiveSignal]);
 
   if (!room) {
     return (
