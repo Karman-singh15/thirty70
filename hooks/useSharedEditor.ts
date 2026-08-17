@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OnMount } from "@monaco-editor/react";
-import type { CursorPosition, EditorDoc, EditorEvent } from "@/lib/editorDoc";
+import type { CursorPosition, EditorDoc, EditorEvent, RoomEvent, RoomSnapshot } from "@/lib/editorDoc";
 
 // One document, shared by everyone in the room.
 //
@@ -40,6 +40,11 @@ interface UseSharedEditorOptions {
   // Whoever currently holds the turn. Only their cursor is broadcast, so a
   // change here means the old cursor is stale and should go.
   writerId: string | null;
+  // Room-level events (turn/participants/presence/media) ride the same
+  // connection as the editor's own events — one EventSource, one Redis
+  // subscriber per client — so they're handed off here rather than opening a
+  // second stream just to receive them.
+  onRoomEvent?: (room: RoomSnapshot) => void;
 }
 
 export function useSharedEditor({
@@ -47,6 +52,7 @@ export function useSharedEditor({
   myUserId,
   canEdit,
   writerId,
+  onRoomEvent,
 }: UseSharedEditorOptions) {
   const [language, setLanguage] = useState("javascript");
   const [connected, setConnected] = useState(false);
@@ -89,6 +95,13 @@ export function useSharedEditor({
   useEffect(() => {
     canEditRef.current = canEdit;
   }, [canEdit]);
+
+  // Ref'd so a caller passing a fresh closure each render doesn't force
+  // handleEvent (and the effect that re-subscribes it) to recreate too.
+  const onRoomEventRef = useRef(onRoomEvent);
+  useEffect(() => {
+    onRoomEventRef.current = onRoomEvent;
+  }, [onRoomEvent]);
 
   // Distinguishes this page load from any other, including a second tab of
   // the same account — that's what lets us ignore the echo of our own edits
@@ -196,7 +209,12 @@ export function useSharedEditor({
   );
 
   const handleEvent = useCallback(
-    (event: EditorEvent) => {
+    (event: EditorEvent | RoomEvent) => {
+      if (event.type === "room") {
+        onRoomEventRef.current?.(event.room);
+        return;
+      }
+
       if (event.type === "doc") {
         applyDoc(event);
         return;
@@ -378,7 +396,7 @@ export function useSharedEditor({
 
   // --- The event stream ---
 
-  const handlerRef = useRef(handleEvent);
+  const handlerRef = useRef<(event: EditorEvent | RoomEvent) => void>(handleEvent);
   useEffect(() => {
     handlerRef.current = handleEvent;
   }, [handleEvent]);
@@ -394,7 +412,7 @@ export function useSharedEditor({
     source.onerror = () => setConnected(false);
     source.onmessage = (e) => {
       try {
-        handlerRef.current(JSON.parse(e.data) as EditorEvent);
+        handlerRef.current(JSON.parse(e.data) as EditorEvent | RoomEvent);
       } catch {
         // Malformed frame — skip it; the next snapshot puts us right.
       }

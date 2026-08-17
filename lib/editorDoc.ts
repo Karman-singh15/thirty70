@@ -1,6 +1,7 @@
-// Wire types for the shared editor document, kept free of any runtime
-// dependency so the browser can import them without dragging the Redis
-// client along.
+// Wire types for the room's realtime events — the shared editor document and
+// the room-level state (turn, participants, presence, media) — kept free of
+// any runtime dependency so the browser can import them without dragging the
+// Redis client along.
 
 export interface EditorDoc {
   code: string;
@@ -40,3 +41,41 @@ export type EditorEvent =
       cursor: CursorPosition | null;
     }
   | { type: "cursor"; from: string; origin: string; cursor: CursorPosition | null };
+
+// --- Room-level state (turn, participants, presence, media) ---
+//
+// Pushed over the same connection as the editor events above, on a separate
+// Redis channel, whenever any of it changes — replacing what used to be a
+// polled GET. There's exactly one of these in flight at a time (the latest
+// one wins), unlike the editor's deltas, so a client that missed one is fully
+// caught up by the next one rather than needing to replay a sequence.
+
+export interface RoomParticipant {
+  userId: string;
+  name: string;
+  imageUrl: string;
+  joinedAt: number;
+}
+
+export interface RoomProblemSummary {
+  titleSlug: string;
+  title: string;
+  difficulty: string;
+  frontendQuestionId: string;
+}
+
+export interface RoomSnapshot {
+  participants: RoomParticipant[];
+  problem: RoomProblemSummary | null;
+  turnDurationSeconds: number;
+  turnOrder: string[];
+  currentTurnUserId: string | null;
+  turnNumber: number;
+  turnEndsAt: number | null;
+  turnPausedRemainingMs: number | null;
+  onlineUserIds: string[];
+  micOn: string[];
+  cameraOn: string[];
+}
+
+export type RoomEvent = { type: "room"; room: RoomSnapshot };

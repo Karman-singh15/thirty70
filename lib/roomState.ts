@@ -4,6 +4,10 @@ import type {
   DocChange,
   EditorDoc,
   EditorEvent,
+  RoomEvent,
+  RoomParticipant,
+  RoomProblemSummary,
+  RoomSnapshot,
 } from "@/lib/editorDoc";
 
 // Live, ephemeral per-room state. Postgres (lib/rooms.ts) owns the durable
@@ -11,7 +15,15 @@ import type {
 // keystroke — current code, presence, and turn/timer state.
 
 const STATE_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days of inactivity before a room's live state expires
-const PRESENCE_WINDOW_MS = 10_000; // must be seen within this window to count as "online"
+
+// Presence is refreshed by the SSE stream's heartbeat (every 20s — see
+// HEARTBEAT_MS in the /stream route) rather than by a poll, so this window
+// has to comfortably outlive one heartbeat interval: a bit over 2x it, so one
+// missed ping doesn't flap someone offline. A clean disconnect (tab closed,
+// left the room) doesn't get marked offline immediately either — see the
+// /stream route for why — so "online" here means "seen within the last 50s",
+// not "connection currently open".
+const PRESENCE_WINDOW_MS = 50_000;
 
 const stateKey = (roomId: string) => `room:${roomId}:state`;
 const presenceKey = (roomId: string) => `room:${roomId}:presence`;
@@ -19,6 +31,7 @@ const turnOrderKey = (roomId: string) => `room:${roomId}:turnOrder`;
 const mediaKey = (roomId: string, kind: "mic" | "camera") => `room:${roomId}:${kind}On`;
 const signalKey = (roomId: string, userId: string) => `room:${roomId}:signal:${userId}`;
 const editorChannel = (roomId: string) => `room:${roomId}:editor`;
+const roomChannel = (roomId: string) => `room:${roomId}:room`;
 const metaKey = (roomId: string) => `room:${roomId}:meta`;
 
 // How long a room's durable data may sit in the cache before being reread.
@@ -164,13 +177,8 @@ export interface CachedRoomMeta {
   ownerId: string;
   ownerName: string;
   inviteCode: string;
-  participants: { userId: string; name: string; imageUrl: string; joinedAt: number }[];
-  problem: {
-    titleSlug: string;
-    title: string;
-    difficulty: string;
-    frontendQuestionId: string;
-  } | null;
+  participants: RoomParticipant[];
+  problem: RoomProblemSummary | null;
   turnDurationSeconds: number;
   createdAt: number;
   updatedAt: number;
@@ -224,7 +232,7 @@ export async function patchCachedRoomMeta(
 // read-modify-write window and no string-offset arithmetic in Lua (whose
 // byte-based indexing would corrupt any non-ASCII character in the file).
 
-export type { CursorPosition, DocChange, EditorDoc, EditorEvent };
+export type { CursorPosition, DocChange, EditorDoc, EditorEvent, RoomEvent, RoomSnapshot };
 
 export type CasResult =
   | { ok: true; version: number }
@@ -293,19 +301,27 @@ export async function publishEditorEvent(
   await pipeline.exec();
 }
 
-// Server-side listener behind the SSE route. Each subscriber owns its
-// connection (a connection in subscriber mode can't serve anything else) and
-// hands back a teardown to run when the client disconnects.
-export function subscribeEditorEvents(
+export async function publishRoomEvent(roomId: string, room: RoomSnapshot): Promise<void> {
+  await redis.publish(roomChannel(roomId), JSON.stringify({ type: "room", room }));
+}
+
+// Server-side listener behind the SSE route. One Redis connection per client
+// carries both channels — a connection in subscriber mode can't serve
+// anything else, so multiplexing here is what keeps "one browser tab, one
+// Redis connection" true even as more event types ride the same stream.
+// Hands back a teardown to run when the client disconnects.
+export function subscribeRoomChannels(
   roomId: string,
-  onMessage: (raw: string) => void
+  handlers: { onEditorEvent: (raw: string) => void; onRoomEvent: (raw: string) => void }
 ): () => void {
   const sub = createRedisSubscriber();
-  const channel = editorChannel(roomId);
+  const editorCh = editorChannel(roomId);
+  const roomCh = roomChannel(roomId);
 
-  sub.subscribe(channel).catch(() => {});
+  sub.subscribe(editorCh, roomCh).catch(() => {});
   sub.on("message", (received, raw) => {
-    if (received === channel) onMessage(raw);
+    if (received === editorCh) handlers.onEditorEvent(raw);
+    else if (received === roomCh) handlers.onRoomEvent(raw);
   });
   // A dropped connection reconnects and resubscribes on its own; the client
   // resyncs from the snapshot it gets on its own reconnect, so there's

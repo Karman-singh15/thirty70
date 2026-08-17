@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { getRoom } from "@/lib/rooms";
+import { broadcastRoomUpdate, getRoom } from "@/lib/rooms";
 import { setMediaState } from "@/lib/roomState";
 
 // Broadcasts whether the caller's mic/camera is on to other participants.
@@ -29,6 +29,9 @@ export async function POST(
     updates.push(setMediaState(id, userId, "camera", body.camera));
   }
   await Promise.all(updates);
+  // Other participants learn about the toggle from this, not from a poll —
+  // reuses the `room` already fetched above rather than a second getRoom.
+  await broadcastRoomUpdate(id, room);
 
   return NextResponse.json({ ok: true });
 }

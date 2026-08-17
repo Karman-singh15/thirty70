@@ -14,6 +14,7 @@ import { ResizeHandle } from "@/components/ResizeHandle";
 import { useLocalMedia } from "@/hooks/useLocalMedia";
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { useSharedEditor } from "@/hooks/useSharedEditor";
+import type { RoomSnapshot } from "@/lib/editorDoc";
 import { usePendingActions } from "@/hooks/usePendingActions";
 import { TopProgressBar } from "@/components/TopProgressBar";
 
@@ -22,12 +23,6 @@ const MAX_PROBLEM_WIDTH = 800;
 const MIN_EDITOR_WIDTH = 360;
 const MIN_PARTICIPANTS_WIDTH = 220;
 const MAX_PARTICIPANTS_WIDTH = 520;
-
-// Turn state and presence still poll (the editor itself is pushed over SSE).
-// This used to be 1.5s because each request cost ~570ms of Postgres; now that
-// the same request is served from Redis in ~30ms, polling more often is
-// cheap, and it halves how long a turn change takes to appear.
-const SYNC_POLL_MS = 700;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -137,6 +132,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     [goToDashboard]
   );
 
+  // One-shot: seeds the fields that essentially never change after creation
+  // (name, owner, invite code) and — just as importantly — is what tells us
+  // via a real status code whether we belong here at all (see
+  // departedFromResponse). Everything that actually changes over a room's
+  // life — turn state, participants, presence, media — arrives afterward
+  // over the realtime stream below, not from polling this again.
   const fetchRoom = useCallback(async () => {
     if (!roomId || departedRef.current) return;
     const res = await fetch(`/api/rooms/${roomId}`);
@@ -154,46 +155,30 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     }
   }, [roomId, departedFromResponse]);
 
-  // Turn state, presence and media. The editor's contents deliberately do not
-  // come through here — they arrive push-style over the shared-editor event
-  // stream, which is far faster than this poll and would only be fought by it.
-  const syncState = useCallback(async () => {
-    if (!roomId || departedRef.current) return;
-    const res = await fetch(`/api/rooms/${roomId}/sync`);
-    if (departedFromResponse(res)) return;
-    if (!res.ok) return;
-
-    const data = await res.json();
-
-    setRoom((prev) =>
-      prev
-        ? {
-            ...prev,
-            participants: data.participants,
-            problem: data.problem,
-            turnDurationSeconds: data.turnDurationSeconds,
-            turnOrder: data.turnOrder,
-            currentTurnUserId: data.currentTurnUserId,
-            turnNumber: data.turnNumber,
-            turnEndsAt: data.turnEndsAt,
-            turnPausedRemainingMs: data.turnPausedRemainingMs,
-            onlineUserIds: data.onlineUserIds,
-            micOn: data.micOn,
-            cameraOn: data.cameraOn,
-          }
-        : prev
-    );
-  }, [roomId, departedFromResponse]);
-
   useEffect(() => {
     fetchRoom();
   }, [fetchRoom]);
 
-  useEffect(() => {
-    if (!roomId) return;
-    const interval = setInterval(syncState, SYNC_POLL_MS);
-    return () => clearInterval(interval);
-  }, [roomId, syncState]);
+  // Turn state, presence and media arrive here, pushed over the same SSE
+  // connection the editor uses (see the onRoomEvent wiring below) — this
+  // used to be a 700ms poll; now it's an update the moment something
+  // actually changes, with no polling at all in between.
+  //
+  // This is also now the only way a second tab of the same account learns it
+  // was removed — e.g. Leave was clicked in another tab. There's no more
+  // poll to hit a 403 on, but every broadcast already carries the current
+  // participant list, which is a strictly better signal: push instead of
+  // poll, and no ambiguity about whether a failure was transient.
+  const handleRoomEvent = useCallback(
+    (snapshot: RoomSnapshot) => {
+      if (myUserId && !snapshot.participants.some((p) => p.userId === myUserId)) {
+        goToDashboard();
+        return;
+      }
+      setRoom((prev) => (prev ? { ...prev, ...snapshot } : prev));
+    },
+    [myUserId, goToDashboard]
+  );
 
   // Fetches the problem body whenever the room's problem changes. The host
   // who picked it already has the details in hand, so they stash them (see
@@ -238,6 +223,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     myUserId: myUserId ?? null,
     canEdit,
     writerId: currentTurnUserId,
+    onRoomEvent: handleRoomEvent,
   });
 
   async function handleProblemSelect(problem: {
@@ -266,8 +252,10 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
     // Problem + starter code are set atomically so the first turn starts
     // with real code already in place, before turn-gating applies. Everyone's
-    // editor — this one included — picks the new document up from the
-    // broadcast that write publishes.
+    // editor — this one included — picks up the new document from the
+    // editor-channel broadcast that write publishes, and the room's new
+    // participants/turn state arrives the same way over the room channel —
+    // no follow-up fetch needed, this client is subscribed to both already.
     await fetch(`/api/rooms/${roomId}/sync`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -282,8 +270,6 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         language: editor.language,
       }),
     });
-
-    fetchRoom();
     });
   }
 
@@ -328,7 +314,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         const { room: r } = await res.json();
         applyRoomUpdate(r);
       } else {
-        syncState();
+        fetchRoom();
       }
     });
   }
@@ -345,7 +331,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         const { room: r } = await res.json();
         applyRoomUpdate(r);
       } else {
-        syncState();
+        fetchRoom();
       }
     });
   }
@@ -362,7 +348,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         const { room: r } = await res.json();
         applyRoomUpdate(r);
       } else {
-        syncState();
+        fetchRoom();
       }
     });
   }

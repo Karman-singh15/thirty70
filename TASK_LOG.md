@@ -1028,3 +1028,150 @@ and Neon's free-tier cold start (~2.4s here, 9.4s when fully asleep) is
 still there underneath — neither is fixable from app code. Deferred
 writes are best-effort: if the process dies within ~1s of a click, that
 room's history entry is lost, though the room itself stays correct.
+
+---
+
+## Delete the /sync poll: room state now pushes over the existing SSE stream
+
+**Date:** 2026-08-17
+
+**Task:** You wanted the repeated `/sync` calls gone. We talked through
+WebSockets, a third-party realtime service, and extending the SSE channel
+already in the app; you picked extending SSE, with a grace period so
+presence doesn't flap.
+
+**Two things went differently from the first sketch**, both worth
+recording:
+
+1. *One connection, not two.* Every SSE client holds a **dedicated** Redis
+   connection — a connection in subscriber mode can't run anything else.
+   A second stream for room state would therefore have doubled the
+   connection count per browser tab for no reason. So `subscribeEditorEvents`
+   became `subscribeRoomChannels`, which subscribes one connection to both
+   `room:{id}:editor` and `room:{id}:room`. Connection count per client is
+   unchanged at one.
+2. *No bespoke grace-period timer.* An in-process "wait 5s then mark them
+   offline" timer breaks the moment there's more than one server instance:
+   a client can disconnect from instance A and reconnect on instance B,
+   and A's timer fires anyway and flashes them offline. Instead presence
+   is now refreshed by the stream's **existing 20s keep-alive heartbeat**,
+   with `PRESENCE_WINDOW_MS` widened 10s → 50s (a bit over 2x the
+   heartbeat, so one missed ping can't flap anyone). Nothing explicitly
+   marks a user offline: pings stop, the entry ages out. That's stateless,
+   survives multiple instances, and needed no new machinery.
+
+**What changed:**
+- `lib/editorDoc.ts` — added `RoomSnapshot`/`RoomEvent` alongside the
+  editor wire types. Still runtime-dependency-free, so the browser imports
+  them without pulling in Redis.
+- `lib/roomState.ts` — new `roomChannel` + `publishRoomEvent`;
+  `subscribeRoomChannels` replaces the editor-only subscriber;
+  `PRESENCE_WINDOW_MS` 10s → 50s.
+- `lib/rooms.ts` — new `getRoomSnapshot` (reuses a `Room` the caller
+  already has, so it never costs a second `getRoom`) and
+  `broadcastRoomUpdate`. Called from `joinRoom`, `leaveRoom`,
+  `setRoomProblem`, `passTurn`, `pauseTurn`, `resumeTurn`,
+  `setTurnDuration` — and from `getRoom` itself when it settles a
+  timed-out turn, since that's a real change nobody explicitly asked for
+  but everyone still needs to see.
+- `app/api/rooms/[id]/stream` — subscribes both channels, opens with a
+  doc *and* a room snapshot, refreshes presence on connect and on each
+  heartbeat, and announces the new connection to everyone else.
+- `app/api/rooms/[id]/media` — broadcasts after a toggle.
+- `app/api/rooms/[id]/sync` — **the GET is gone**; only the two writes
+  (problem select, legacy code save) remain.
+- `app/room/[id]/page.tsx` — the 700ms `setInterval` is deleted. The
+  initial `GET /api/rooms/[id]` stays, because it's also what tells us via
+  a real status code whether we belong here at all. Mutation failures fall
+  back to `fetchRoom()` instead of the removed `syncState()`.
+
+**One case needed re-solving.** Removing the poll removed the 403 that a
+*second tab* relied on to notice it had been removed (Leave clicked
+elsewhere). Every broadcast already carries the participant list, so the
+room handler now checks for its own absence — push instead of poll, and
+no ambiguity about whether a failure was transient.
+
+**Measured, against live Upstash** (counting real Redis commands by
+wrapping the client's `sendCommand`):
+
+| 3-person room, 60s | commands/min |
+|---|---|
+| Old: 9 cmds x 3 clients x 86 polls | **2314** |
+| New, idle: 9 cmds x 3 clients x 3 heartbeats | **81** |
+| New, plus 20 turn actions in that minute | **~521** |
+
+28.6x fewer while idle, and still 4.4x fewer under heavy use — the old
+number was the same whether the room was busy or not, which was the whole
+problem.
+
+**Verified:** clean `tsc`, `npm run build`, `eslint` unchanged at the
+three known pre-existing problems. A 29-assertion suite against live
+Neon/Upstash: one connection carries both channels without cross-talk,
+every mutation broadcasts and the payload actually reflects the change
+(problem, turn order, rotation, pause, duration, mic, leaver), presence
+survives a missed heartbeat but a genuinely stale entry still expires,
+the snapshot matches what `getRoom` reports, editor deltas still flow
+alongside room events, and unsubscribing stops both channels. Then booted
+the dev server and watched a real SSE connection through curl (via a
+temporary unauthenticated mirror of the route, since Clerk gates the real
+one, removed afterwards): doc + room snapshot on connect, heartbeats at
+the expected interval, and a `passTurn` issued elsewhere arriving as
+`turn=sc-b n=2` → `turn=sc-a n=3` about 170ms later, with the subscriber
+torn down on every disconnect.
+
+**Not verified in a browser:** two real tabs. The event plumbing is
+proven end to end through the HTTP stream, but the React side — that the
+turn bar and participant list actually re-render from these events, and
+that presence doesn't visibly flicker across a reconnect — needs two
+accounts to confirm.
+
+**Known limitations / trade-offs:**
+- **Staleness window is now 20s, not 700ms.** If a pub/sub message is
+  ever missed, the client stays stale until the next heartbeat, which
+  re-sends a full snapshot as a self-heal. That heartbeat is why one beat
+  still costs 9 commands rather than the 2 a bare presence touch would —
+  a deliberate trade of a little load for a bounded worst case.
+- **A closed tab takes up to 50s to show as offline.** Deliberate: marking
+  someone offline the instant the connection drops would flicker on every
+  EventSource reconnect, which is worse. The Leave button still removes
+  them immediately, which is the case that actually needs to be instant.
+- Each SSE client still holds one Redis connection for as long as it's
+  open. Unchanged by this work, but it's the first thing that would need
+  pooling at real scale.
+
+---
+
+## Move WebRTC signaling's membership check off Postgres
+
+**Date:** 2026-08-17
+
+**Task:** After the `/sync`→SSE change above, you asked me to verify nothing
+broke and to explain the still-frequent `/signal` requests. Those turned out
+to be unrelated and pre-existing (WebRTC handshake polling, 700ms while
+connecting / 2.5s once idle, for as long as anyone's in the room) — but
+digging into them surfaced that every single poll, on both `GET` and `POST`,
+was calling `isRoomMember()`, which reads Postgres directly. Unlike turn
+state, presence, and the participant list — all served from the Redis-cached
+room meta — this one check never got moved off Postgres, so it was paying a
+real Neon round trip (this app's own numbers put that at ~250-550ms)
+continuously, for every tab, forever, even in a fully idle room.
+
+**What changed:**
+- `lib/rooms.ts` — added `isRoomMemberCached`, which answers the same
+  question from `getRoomMeta`'s cached participant list instead of a fresh
+  query. `getRoomMeta` already falls back to Postgres on a cache miss, and
+  `joinRoom`/`leaveRoom` already invalidate it synchronously as part of the
+  request that changes membership — so this carries the same staleness
+  guarantee (effectively none, in practice) that turn state and presence
+  already rely on. The original `isRoomMember` is untouched and still used
+  where a check runs once per connection/action rather than on a tight poll
+  (`/stream` on connect, `/editor`'s pre-turn fallback).
+- `app/api/rooms/[id]/signal/route.ts` — both `GET` and `POST` now call
+  `isRoomMemberCached` instead of `isRoomMember`.
+
+**Verified:** clean `tsc`, clean `next build`, `eslint` unchanged at the same
+three pre-existing problems (confirmed via `git diff` that none of the
+flagged lines belong to this change).
+
+**Not verified in a browser:** same gap as the change above — two real tabs,
+to confirm WebRTC handshakes still complete normally under the cached check.

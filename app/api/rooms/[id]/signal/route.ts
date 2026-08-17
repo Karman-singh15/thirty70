@@ -1,11 +1,15 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { isRoomMember } from "@/lib/rooms";
+import { isRoomMemberCached } from "@/lib/rooms";
 import { drainSignals, pushSignals, type SignalMessage } from "@/lib/roomState";
 
 // WebRTC signaling relay. Peers exchange SDP offers/answers and ICE candidates
 // through here to set up a direct connection; once that's up, the actual audio
 // and video flow browser-to-browser and never come back through this server.
+//
+// Polled every 700ms-2.5s per tab for as long as anyone's in the room (see
+// useWebRTC), so the membership check below reads the cached room meta
+// instead of hitting Postgres on every poll.
 
 const VALID_TYPES = new Set(["hello", "offer", "answer", "ice"]);
 
@@ -20,7 +24,7 @@ export async function GET(
   }
 
   const { id } = await params;
-  if (!(await isRoomMember(id, userId))) {
+  if (!(await isRoomMemberCached(id, userId))) {
     return NextResponse.json({ error: "Not a member" }, { status: 403 });
   }
 
@@ -39,7 +43,7 @@ export async function POST(
   }
 
   const { id } = await params;
-  if (!(await isRoomMember(id, userId))) {
+  if (!(await isRoomMemberCached(id, userId))) {
     return NextResponse.json({ error: "Not a member" }, { status: 403 });
   }
 

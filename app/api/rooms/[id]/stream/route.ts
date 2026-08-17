@@ -1,15 +1,31 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { isRoomMember } from "@/lib/rooms";
-import { getLiveState, subscribeEditorEvents, type EditorEvent } from "@/lib/roomState";
+import { broadcastRoomUpdate, getRoomSnapshot, isRoomMember } from "@/lib/rooms";
+import {
+  getLiveState,
+  subscribeRoomChannels,
+  touchPresence,
+  type EditorEvent,
+  type RoomEvent,
+} from "@/lib/roomState";
 
-// Server-sent events carrying the shared editor's state. This is the push
-// channel the room was missing: edits reach everyone in roughly the time of
-// one Redis publish rather than waiting out a poll interval.
+// Server-sent events carrying everything the room needs live: the shared
+// editor's document (its own channel) and turn/participant/presence/media
+// state (a second channel, multiplexed onto this same connection and this
+// same Redis subscriber — see subscribeRoomChannels). This is what replaced
+// the old 700ms /sync poll: state reaches everyone in roughly the time of one
+// Redis publish instead of waiting out a poll interval, and Redis only gets
+// touched when something actually changes instead of on every tick.
 //
-// It only carries the document. Turn state, presence and media still ride the
-// 1.5s /sync poll — that poll is also what keeps presence alive, so it can't
-// simply be replaced by this.
+// This is also what drives presence now. There's no more per-poll heartbeat
+// write — instead, this route's own keep-alive ping doubles as the presence
+// refresh (see HEARTBEAT_MS), and PRESENCE_WINDOW_MS in roomState.ts is sized
+// to tolerate one missed ping. Deliberately NOT marked offline the instant
+// this connection drops: a flaky reconnect (EventSource retries on its own)
+// would otherwise flash someone offline and back online for everyone else,
+// which is worse than the alternative of "closed the tab" taking up to one
+// presence window to be noticed. The explicit Leave button already handles
+// the case that actually needs to be instant.
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -47,6 +63,8 @@ export async function GET(
           cleanup();
         }
       };
+      const writeEvent = (event: EditorEvent | RoomEvent) =>
+        write(`data: ${JSON.stringify(event)}\n\n`);
 
       const cleanup = () => {
         if (closed) return;
@@ -66,23 +84,42 @@ export async function GET(
         return;
       }
 
-      // Open with the current document so a client that just connected (or
-      // reconnected after a drop) is immediately in sync, with no separate
-      // fetch and no window where it would apply edits to a stale buffer.
+      // Connecting counts as presence — refresh it before anything else, so
+      // the snapshot sent below (and the broadcast to everyone else) already
+      // reflects this client as online.
+      await touchPresence(id, userId);
+
+      // Open with the current document and the current room state, so a
+      // client that just connected — or reconnected after a drop — is fully
+      // in sync with no separate fetch and no window of stale data.
       const live = await getLiveState(id);
-      const snapshot: EditorEvent = {
-        type: "doc",
-        version: live.docVersion,
-        code: live.code,
-        language: live.language,
-      };
-      write(`data: ${JSON.stringify(snapshot)}\n\n`);
+      writeEvent({ type: "doc", version: live.docVersion, code: live.code, language: live.language });
 
-      unsubscribe = subscribeEditorEvents(id, (raw) => write(`data: ${raw}\n\n`));
+      const snapshot = await getRoomSnapshot(id);
+      if (snapshot) writeEvent({ type: "room", room: snapshot });
 
-      // Comment frames keep intermediaries from treating a quiet stream as
-      // dead and closing it.
-      heartbeat = setInterval(() => write(`: ping\n\n`), HEARTBEAT_MS);
+      unsubscribe = subscribeRoomChannels(id, {
+        onEditorEvent: (raw) => write(`data: ${raw}\n\n`),
+        onRoomEvent: (raw) => write(`data: ${raw}\n\n`),
+      });
+
+      // Announce this connection to everyone else — covers both "a new
+      // person just came online" and "someone's browser reconnected after a
+      // blip", uniformly: presence is just a timestamp refresh either way, so
+      // there's no offline-then-online transition to cause a flicker.
+      await broadcastRoomUpdate(id);
+
+      // Doubles as the presence refresh (see file header) and, as a cheap
+      // self-heal, re-sends this client its own room snapshot — insurance
+      // against a pub/sub message that arrived while this connection was
+      // briefly re-establishing. Comment-only frames would keep intermediary
+      // proxies from treating a quiet stream as dead; sending real data does
+      // that and more.
+      heartbeat = setInterval(async () => {
+        await touchPresence(id, userId);
+        const snap = await getRoomSnapshot(id);
+        if (snap) writeEvent({ type: "room", room: snap });
+      }, HEARTBEAT_MS);
     },
   });
 

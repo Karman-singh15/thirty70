@@ -158,6 +158,7 @@ export async function getRoom(id: string): Promise<Room | undefined> {
   if (!meta) return undefined;
 
   let liveState = live;
+  let timedOut = false;
   if (
     liveState.currentTurnUserId &&
     liveState.turnEndsAt !== null &&
@@ -166,9 +167,10 @@ export async function getRoom(id: string): Promise<Room | undefined> {
   ) {
     await endCurrentTurn(id, "timed_out", meta);
     liveState = await roomState.getLiveState(id);
+    timedOut = true;
   }
 
-  return {
+  const room: Room = {
     id: meta.id,
     name: meta.name,
     ownerId: meta.ownerId,
@@ -187,10 +189,58 @@ export async function getRoom(id: string): Promise<Room | undefined> {
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
   };
+
+  // The clock ran out, not a person — but everyone connected still needs to
+  // see the rotation move on, so whichever caller's read happened to notice
+  // it is the one that announces it.
+  if (timedOut) await broadcastRoomUpdate(id, room);
+
+  return room;
 }
 
-// Single indexed lookup — for hot paths (WebRTC signaling) that only need to
-// know "is this user allowed in here", not the whole room.
+// The room-level snapshot pushed over the realtime stream — everything a
+// connected client needs except the editor document itself, which travels on
+// its own channel. Reuses whatever `Room` the caller already fetched when it
+// has one, so this never costs a second `getRoom()`.
+export async function getRoomSnapshot(
+  roomId: string,
+  knownRoom?: Room
+): Promise<roomState.RoomSnapshot | null> {
+  const [room, onlineUserIds, media] = await Promise.all([
+    knownRoom ?? getRoom(roomId),
+    roomState.getOnlineUserIds(roomId),
+    roomState.getMediaState(roomId),
+  ]);
+  if (!room) return null;
+
+  return {
+    participants: room.participants,
+    problem: room.problem,
+    turnDurationSeconds: room.turnDurationSeconds,
+    turnOrder: room.turnOrder,
+    currentTurnUserId: room.currentTurnUserId,
+    turnNumber: room.turnNumber,
+    turnEndsAt: room.turnEndsAt,
+    turnPausedRemainingMs: room.turnPausedRemainingMs,
+    onlineUserIds,
+    micOn: media.micOn,
+    cameraOn: media.cameraOn,
+  };
+}
+
+// Tells everyone connected to the room that something changed — this is what
+// replaced the old poll. Called after every mutation (join, leave, turn
+// actions, media toggles) and by getRoom() itself when it settles a timed-out
+// turn, since that's a real state change nobody explicitly asked for but
+// everyone still needs to see.
+export async function broadcastRoomUpdate(roomId: string, knownRoom?: Room): Promise<void> {
+  const snapshot = await getRoomSnapshot(roomId, knownRoom);
+  if (snapshot) await roomState.publishRoomEvent(roomId, snapshot);
+}
+
+// Single indexed lookup, straight to Postgres — no staleness possible. For
+// paths that check membership once per connection/action rather than on a
+// tight poll, where that guarantee is worth the round trip.
 export async function isRoomMember(roomId: string, userId: string): Promise<boolean> {
   const row = await db.query.roomParticipants.findFirst({
     where: and(
@@ -201,6 +251,18 @@ export async function isRoomMember(roomId: string, userId: string): Promise<bool
     columns: { userId: true },
   });
   return !!row;
+}
+
+// Same check, served from the cached room meta instead of a fresh Postgres
+// read — for genuinely hot paths (WebRTC signaling polls every 700ms-2.5s per
+// tab, indefinitely). getRoomMeta falls back to Postgres on a cache miss, and
+// joinRoom/leaveRoom invalidate the cache synchronously as part of the same
+// request that changes membership, so this carries no meaningful staleness
+// window in practice — the same trust the rest of the app already places in
+// this cache for turn state and presence.
+export async function isRoomMemberCached(roomId: string, userId: string): Promise<boolean> {
+  const meta = await getRoomMeta(roomId);
+  return !!meta && meta.participants.some((p) => p.userId === userId);
 }
 
 export async function getRoomByInviteCode(code: string): Promise<Room | undefined> {
@@ -244,7 +306,9 @@ export async function joinRoom(
   // The participant list changed — rebuild it rather than trying to patch it.
   await roomState.invalidateRoomMeta(roomId);
 
-  return (await getRoom(roomId)) ?? null;
+  const room = await getRoom(roomId);
+  if (room) await broadcastRoomUpdate(roomId, room);
+  return room ?? null;
 }
 
 // Only the host picks problems. Starter code/language are written in the same
@@ -320,7 +384,9 @@ export async function setRoomProblem(
   // after the response instead of adding two more ~510ms writes to it.
   persistSessionChange(roomId, problem.titleSlug, sessionId);
 
-  return (await getRoom(roomId)) ?? null;
+  const room = await getRoom(roomId);
+  if (room) await broadcastRoomUpdate(roomId, room);
+  return room ?? null;
 }
 
 // Closes out whatever session was in progress and opens the new one. Deferred
@@ -427,7 +493,9 @@ export async function passTurn(roomId: string, userId: string): Promise<Room | n
   if (!turn || turn.userId !== userId) return null;
 
   await endCurrentTurn(roomId, "passed_turn");
-  return (await getRoom(roomId)) ?? null;
+  const room = await getRoom(roomId);
+  if (room) await broadcastRoomUpdate(roomId, room);
+  return room ?? null;
 }
 
 // Owner-only: changes take effect starting with the next turn, not
@@ -463,7 +531,9 @@ export async function setTurnDuration(
     }),
   ]);
 
-  return (await getRoom(roomId)) ?? null;
+  const room = await getRoom(roomId);
+  if (room) await broadcastRoomUpdate(roomId, room);
+  return room ?? null;
 }
 
 // Owner-only: freezes the current turn's countdown where it stands. The
@@ -477,7 +547,9 @@ export async function pauseTurn(roomId: string, userId: string): Promise<Room | 
   const result = await roomState.pauseTurn(roomId);
   if (!result) return null;
 
-  return (await getRoom(roomId)) ?? null;
+  const room = await getRoom(roomId);
+  if (room) await broadcastRoomUpdate(roomId, room);
+  return room ?? null;
 }
 
 // Owner-only: resumes a paused turn with whatever time was left on the clock.
@@ -488,7 +560,9 @@ export async function resumeTurn(roomId: string, userId: string): Promise<Room |
   const result = await roomState.resumeTurn(roomId);
   if (!result) return null;
 
-  return (await getRoom(roomId)) ?? null;
+  const room = await getRoom(roomId);
+  if (room) await broadcastRoomUpdate(roomId, room);
+  return room ?? null;
 }
 
 export async function leaveRoom(roomId: string, userId: string): Promise<void> {
@@ -544,5 +618,7 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
   } else {
     // The participant list changed for everyone still here.
     await roomState.invalidateRoomMeta(roomId);
+    const room = await getRoom(roomId);
+    if (room) await broadcastRoomUpdate(roomId, room);
   }
 }
