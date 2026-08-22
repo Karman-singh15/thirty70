@@ -4,6 +4,27 @@ A running record of work done on this project, in plain language.
 
 ---
 
+## Extension worked on localhost, not on the Vercel deploy
+
+**Date:** 2026-08-23
+
+**Task:** Run/Submit worked against `localhost:3000` but not against
+`https://thirty70.vercel.app`.
+
+**Cause:** `extension/manifest.json`'s `externally_connectable.matches` only
+listed `localhost:3000` and a placeholder domain — Chrome refuses
+`chrome.runtime.connect` from any origin not on that list, silently (no
+error surfaces on thirty70's side, the port just disconnects). Replaced the
+placeholder with `https://thirty70.vercel.app/*`.
+
+**Still needed on the user's end (can't be done from here):** reload the
+extension at `chrome://extensions` to pick up the manifest change, and
+confirm `NEXT_PUBLIC_LEETCODE_EXTENSION_ID` is set under the Vercel project's
+Environment Variables (it's inlined at build time, so setting it in the
+dashboard alone doesn't take effect until the next deploy) — then redeploy.
+
+---
+
 ## Skip offline participants when rotating the turn
 
 **Date:** 2026-08-23

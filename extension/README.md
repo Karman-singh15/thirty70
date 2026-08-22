@@ -43,12 +43,21 @@ need to look up or share an id to do it.
 You must be logged into leetcode.com in the same Chrome profile for Run/Submit
 to work — the extension rides your existing session, it doesn't create one.
 
-## Before shipping this anywhere but localhost
+## Deploying to a new domain
 
-`manifest.json`'s `externally_connectable.matches` currently allows
-`http://localhost:3000/*` and a placeholder `https://thirty70.example.com/*`.
-Replace the placeholder with your real production domain before publishing
-the extension, or externally_connectable will reject messages from prod.
+`manifest.json`'s `externally_connectable.matches` is a hardcoded allowlist —
+`http://localhost:3000/*` and `https://thirty70.vercel.app/*` right now.
+Chrome silently refuses `chrome.runtime.connect` from any origin not listed
+there (no console error on thirty70's side, no visible failure in the
+extension — the port just disconnects immediately), so a custom domain or a
+Vercel preview URL needs its own entry here, followed by reloading the
+extension at `chrome://extensions`.
+
+Separately, `NEXT_PUBLIC_LEETCODE_EXTENSION_ID` is inlined into the site at
+**build time**, not read at runtime — setting it in Vercel's dashboard alone
+does nothing until the next deploy picks it up. Add it under the project's
+Environment Variables (Production, and Preview if you test there too) with
+the value from `## Load it locally` above, then trigger a new deploy.
 
 ## Note on LeetCode's Terms of Service
 
