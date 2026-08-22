@@ -4,6 +4,36 @@ A running record of work done on this project, in plain language.
 
 ---
 
+## Infra check-in
+
+**Date:** 2026-08-23
+
+**Task:** Asked for a gut-check on whether the current infrastructure is in
+good shape, after the day's round of persistence/realtime fixes (offline-aware
+turn rotation, instant-leave-on-close, presence-timeout room disband).
+
+**Assessment:** Overall solid for what this is — Neon Postgres for durable
+state, Upstash Redis for live state/pub-sub, SSE instead of polling, atomic
+CAS writes on the shared editor, lazy cleanup instead of a cron. Today's
+changes closed the real gaps that existed (rotation landing on offline
+players, rooms never getting disbanded, no instant leave on tab close).
+
+**One real risk worth knowing about:** SSE over Vercel serverless functions
+is an awkward fit at real scale — every connected client holds both a Node
+function alive *and* a dedicated Redis subscriber connection for as long as
+the stream stays open. Vercel's function max-duration will eventually
+force-disconnect long-running sessions (invisible to users — the client
+already reconnects on its own — just periodic churn), and Upstash's
+concurrent-connection cap is the more likely real ceiling if many rooms are
+ever open at once.
+
+**How to apply:** Fine as-is for personal/small-group use. Before assuming
+this scales further, check the Upstash plan's max concurrent connections
+against realistic simultaneous-room/participant counts — that's the number
+that would actually need attention first.
+
+---
+
 ## Leave instantly on tab close (Meet-style), keep presence timeout as fallback
 
 **Date:** 2026-08-23
