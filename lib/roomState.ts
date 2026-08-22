@@ -500,17 +500,42 @@ export async function resumeTurn(roomId: string): Promise<{ turnEndsAt: number }
   return { turnEndsAt };
 }
 
-// Rotates to the next player in turnOrder after theirs, and starts their timer.
+// Walks `order` starting just after `afterUserId` (or from the front, if
+// null) and returns the first user who's currently online — so a turn never
+// lands on someone who isn't there to take it. Wraps all the way around,
+// so a lone online player keeps getting the turn back rather than the
+// rotation stalling on them. Falls back to the plain next-in-rotation pick
+// only when nobody in `order` is online at all — better to hand it to
+// someone than strand the room with no turn holder until they reconnect.
+export function pickNextTurnHolder(
+  order: string[],
+  onlineUserIds: string[],
+  afterUserId: string | null
+): string {
+  const online = new Set(onlineUserIds);
+  const startIndex = afterUserId ? order.indexOf(afterUserId) : -1;
+  for (let step = 1; step <= order.length; step++) {
+    const candidate = order[(startIndex + step) % order.length];
+    if (online.has(candidate)) return candidate;
+  }
+  return order[(startIndex + 1) % order.length];
+}
+
+// Rotates to the next *online* player in turnOrder after theirs, and starts
+// their timer — an offline participant is skipped rather than stalling the
+// room on someone who isn't there to take their turn.
 export async function advanceTurn(
   roomId: string,
   durationMs: number
 ): Promise<{ userId: string; turnNumber: number; turnEndsAt: number } | null> {
-  const [order, state] = await Promise.all([getTurnOrder(roomId), getLiveState(roomId)]);
+  const [order, state, onlineUserIds] = await Promise.all([
+    getTurnOrder(roomId),
+    getLiveState(roomId),
+    getOnlineUserIds(roomId),
+  ]);
   if (order.length === 0) return null;
 
-  const currentIndex = state.currentTurnUserId ? order.indexOf(state.currentTurnUserId) : -1;
-  const nextIndex = (currentIndex + 1) % order.length;
-  const nextUserId = order[nextIndex];
+  const nextUserId = pickNextTurnHolder(order, onlineUserIds, state.currentTurnUserId);
   const nextTurnNumber = state.turnNumber + 1;
 
   await startTurn(roomId, nextUserId, nextTurnNumber, durationMs);

@@ -4,6 +4,34 @@ A running record of work done on this project, in plain language.
 
 ---
 
+## Skip offline participants when rotating the turn
+
+**Date:** 2026-08-23
+
+**Task:** The turn rotation (`advanceTurn` in `lib/roomState.ts`) picked the
+next person in `turnOrder` blindly — pass, timeout, or someone leaving could
+all hand the turn to a participant who wasn't actually online to take it,
+stalling the room until their turn timed out too.
+
+**Approach:** Added `pickNextTurnHolder(order, onlineUserIds, afterUserId)`
+in `lib/roomState.ts` — walks the turn order starting just after
+`afterUserId`, wrapping all the way around, and returns the first *online*
+candidate. Only falls back to the old blind "next in rotation" pick when
+nobody in the order is online at all (better to hand it to someone than
+strand the room with no turn holder). `advanceTurn` now calls this instead
+of indexing `order` directly, so pass/timeout/leave-triggered rotation all
+pick up the fix automatically — none of their own call sites had to change.
+`setRoomProblem` (the very first turn, when a problem is picked) uses the
+same helper with `afterUserId: null`, so the opening turn also skips
+straight to the first online participant.
+
+Deliberately scoped to rotation only — this doesn't interrupt someone
+mid-turn the instant they go offline (presence has up to a ~50s window
+before someone reads as offline anyway, per `PRESENCE_WINDOW_MS`), it just
+keeps the *next* hand-off from landing on them.
+
+---
+
 ## Run/Submit against LeetCode via a companion browser extension
 
 **Date:** 2026-08-23

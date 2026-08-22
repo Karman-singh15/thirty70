@@ -371,10 +371,16 @@ export async function setRoomProblem(
   // Redis writes, batched by what depends on what. setTurnOrder and the live
   // state reset touch different keys; startTurn has to follow the reset,
   // because the reset clears the very turn fields it sets.
-  const [, docVersion] = await Promise.all([
+  const [, docVersion, onlineUserIds] = await Promise.all([
     roomState.setTurnOrder(roomId, order),
     roomState.resetLiveStateForSession(roomId, sessionId, starterCode, starterLanguage),
+    roomState.getOnlineUserIds(roomId),
   ]);
+
+  // Starts with the first participant who's actually online, same rule the
+  // rotation itself follows — no point opening on someone who isn't there.
+  const starterUserId =
+    order.length > 0 ? roomState.pickNextTurnHolder(order, onlineUserIds, null) : null;
 
   await Promise.all([
     // A new problem replaces the document outright — tell every connected
@@ -389,8 +395,8 @@ export async function setRoomProblem(
     // invalidating it — that keeps the getRoom below on the fast path instead
     // of sending it back to Postgres.
     roomState.setCachedRoomMeta(roomId, { ...meta, problem, updatedAt: Date.now() }),
-    order.length > 0
-      ? roomState.startTurn(roomId, order[0], 1, meta.turnDurationSeconds * 1000)
+    starterUserId
+      ? roomState.startTurn(roomId, starterUserId, 1, meta.turnDurationSeconds * 1000)
       : Promise.resolve(),
   ]);
 
