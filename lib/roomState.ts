@@ -37,6 +37,7 @@ const signalKey = (roomId: string, userId: string) => `room:${roomId}:signal:${u
 const editorChannel = (roomId: string) => `room:${roomId}:editor`;
 const roomChannel = (roomId: string) => `room:${roomId}:room`;
 const metaKey = (roomId: string) => `room:${roomId}:meta`;
+const emptySinceKey = (roomId: string) => `room:${roomId}:emptySince`;
 
 // How long a room's durable data may sit in the cache before being reread.
 // Every change *we* make invalidates or patches the entry outright, so this
@@ -160,8 +161,34 @@ export async function clearRoomState(roomId: string): Promise<void> {
     turnOrderKey(roomId),
     metaKey(roomId),
     mediaKey(roomId, "mic"),
-    mediaKey(roomId, "camera")
+    mediaKey(roomId, "camera"),
+    emptySinceKey(roomId)
   );
+}
+
+// --- Empty-room tracking ---
+//
+// There's no background sweep — a room with nobody online only gets noticed
+// (and disbanded, see deleteRoom in lib/rooms.ts) the next time someone
+// happens to read it: a poll from a tab still open, an invite-link visit, or
+// the owner's dashboard listing every room they belong to. These two
+// functions just track *how long* a room has been empty, so that read can
+// tell a brief refresh or a wifi blip from a genuinely abandoned room.
+
+// Records the first moment nobody was online, if this is the first read to
+// notice — NX means only that first caller actually sets it, so every
+// caller after gets back the same original timestamp rather than resetting
+// the clock on every poll of a room that's still empty.
+export async function markRoomEmptySince(roomId: string): Promise<number> {
+  const key = emptySinceKey(roomId);
+  const now = Date.now();
+  await redis.set(key, now, "EX", STATE_TTL_SECONDS, "NX");
+  const stored = await redis.get(key);
+  return stored ? Number(stored) : now;
+}
+
+export async function clearRoomEmptySince(roomId: string): Promise<void> {
+  await redis.del(emptySinceKey(roomId));
 }
 
 // --- Cached room record ---

@@ -46,6 +46,21 @@ export type UpdateCodeResult = "ok" | "not_member" | "not_your_turn";
 const MIN_TURN_SECONDS = 10;
 const MAX_TURN_SECONDS = 3600;
 
+// How long a room may sit with nobody online before the next person to check
+// on it disbands it — long enough to survive a refresh, a laptop sleeping, or
+// a brief wifi drop; short enough that an abandoned room doesn't just sit in
+// the database forever.
+const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
+
+// Permanently removes a room — cascades to its participants/sessions/turns in
+// Postgres, and drops everything cached about it in Redis. Shared by the
+// "last person explicitly left" path (leaveRoom) and the "everyone's been
+// offline long enough" path (getRoom).
+async function deleteRoom(roomId: string): Promise<void> {
+  await db.delete(rooms).where(eq(rooms.id, roomId));
+  await roomState.clearRoomState(roomId);
+}
+
 function mapProblem(row: typeof problems.$inferSelect): RoomProblem {
   return {
     titleSlug: row.titleSlug,
@@ -144,19 +159,38 @@ export async function getRoomMeta(
   return meta;
 }
 
-// Fetches everything needed to render a room. The three reads are issued
+// Fetches everything needed to render a room. The four reads are issued
 // together rather than awaited in turn, so the whole thing is one round trip
 // in the common case. Also settles an expired turn inline, so pollers don't
-// need a separate timeout-check request before this one.
+// need a separate timeout-check request before this one — and, the same way,
+// disbands the room inline once everyone's been offline long enough (see
+// deleteRoom below).
 export async function getRoom(id: string): Promise<Room | undefined> {
-  const [cachedMeta, live, turnOrder] = await Promise.all([
+  const [cachedMeta, live, turnOrder, onlineUserIds] = await Promise.all([
     roomState.getCachedRoomMeta(id),
     roomState.getLiveState(id),
     roomState.getTurnOrder(id),
+    roomState.getOnlineUserIds(id),
   ]);
 
   const meta = await getRoomMeta(id, cachedMeta);
   if (!meta) return undefined;
+
+  // Nobody's here right now. There's no background sweep for this — the
+  // next read of this room (a poll from a tab still open elsewhere, an
+  // invite-link visit, the owner's dashboard) is what notices and disbands
+  // it, once it's been empty for the full grace window rather than just
+  // this one instant (a refresh or a brief network drop shouldn't cost
+  // anyone their room).
+  if (onlineUserIds.length === 0) {
+    const emptySince = await roomState.markRoomEmptySince(id);
+    if (Date.now() - emptySince >= EMPTY_ROOM_GRACE_MS) {
+      await deleteRoom(id);
+      return undefined;
+    }
+  } else {
+    await roomState.clearRoomEmptySince(id);
+  }
 
   let liveState = live;
   let timedOut = false;
@@ -633,8 +667,7 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
     .where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)));
 
   if (remaining.length === 0) {
-    await db.delete(rooms).where(eq(rooms.id, roomId)); // cascades participants/sessions/turns
-    await roomState.clearRoomState(roomId); // includes the cached record
+    await deleteRoom(roomId);
   } else {
     // The participant list changed for everyone still here.
     await roomState.invalidateRoomMeta(roomId);

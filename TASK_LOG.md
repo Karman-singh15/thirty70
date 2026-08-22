@@ -4,6 +4,69 @@ A running record of work done on this project, in plain language.
 
 ---
 
+## Leave instantly on tab close (Meet-style), keep presence timeout as fallback
+
+**Date:** 2026-08-23
+
+**Task:** Follow-up to the previous entry's presence-timeout-based room
+disband — asked whether a Google Meet-style "closing the tab leaves the room
+immediately" approach would be better.
+
+**Approach:** Better for the common case, not a replacement for the fallback.
+Added a `pagehide` listener in `app/room/[id]/page.tsx` that calls
+`navigator.sendBeacon('/api/rooms/${roomId}/leave')` the moment the tab
+actually closes or navigates away (skipped when `event.persisted` — that's
+the page being frozen into the back/forward cache, not a real departure).
+`sendBeacon` is what makes this reliable during unload, where a normal
+`fetch` can get cancelled before it reaches the network. The existing
+`/api/rooms/[id]/leave` route needed no changes — it already doesn't read a
+request body, and `sendBeacon` carries the session cookie same-origin, so
+Clerk auth just works.
+
+This sits on top of the presence-timeout fallback from the previous entry,
+not instead of it — `pagehide` never fires for a crash, a force-quit, or the
+OS killing the tab, so that fallback is still what eventually cleans those
+cases up. Clean tab-closes now disband a now-empty room immediately (via the
+existing `leaveRoom` → `deleteRoom` path); everything else still gets swept
+within `EMPTY_ROOM_GRACE_MS` the next time someone reads the room.
+
+---
+
+## Disband a room once everyone's been offline for a while
+
+**Date:** 2026-08-23
+
+**Task:** A room only ever got deleted from Postgres when the last member hit
+Leave explicitly. If everyone just closed their tabs — no explicit Leave —
+the room (and its participant/session/turn rows) sat in the database
+forever.
+
+**Approach:** No background sweep/cron exists in this app, so this piggybacks
+on the same lazy-settle pattern `getRoom()` already uses for turn timeouts
+("whoever reads the room next notices and fixes it"). `getRoom()` now also
+fetches `getOnlineUserIds` and, when a room comes back empty, checks how long
+it's been that way via a new Redis marker
+(`roomState.markRoomEmptySince`/`clearRoomEmptySince` — first-empty
+timestamp, cleared the moment anyone's online again). Once a room has been
+empty for `EMPTY_ROOM_GRACE_MS` (5 minutes), the *next* read of it — a poll
+from a tab still open elsewhere, an invite-link visit, or the room owner's
+own dashboard listing every room they belong to — disbands it via a new
+`deleteRoom()` helper (extracted from the inline delete `leaveRoom` already
+did on its own "last person out" path, now shared by both).
+
+5 minutes is deliberately generous — long enough that a refresh, a laptop
+going to sleep, or a brief wifi drop doesn't cost anyone their room.
+
+**Known limitation:** if literally nobody — not even the owner — ever
+reopens the dashboard or the invite link again, the room is never read
+again, so it never gets disbanded either; it just sits there harmlessly
+(Redis's own live-state TTL still expires in 7 days regardless). Fixing that
+fully would need a real background sweep (e.g. Vercel Cron), which felt like
+more infrastructure than this warranted — flagged here in case that
+changes.
+
+---
+
 ## Extension worked on localhost, not on the Vercel deploy
 
 **Date:** 2026-08-23

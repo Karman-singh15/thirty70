@@ -101,6 +101,28 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     params.then((p) => setRoomId(p.id));
   }, [params]);
 
+  // Mirrors how Google Meet handles a closed tab: tell the server this
+  // participant is gone the moment the page actually goes away, rather than
+  // waiting for their presence to quietly time out. sendBeacon is what makes
+  // this reliable during unload — a normal fetch can get cancelled before it
+  // reaches the network once the page starts tearing down. `persisted`
+  // distinguishes a real close/navigate-away from the page merely being
+  // frozen into the back/forward cache, which isn't a departure.
+  //
+  // This is on top of, not instead of, the server's own presence-timeout
+  // fallback (see getRoom in lib/rooms.ts) — a crash, a force-quit, or the
+  // OS killing the tab never fires pagehide, so that fallback is still what
+  // eventually cleans those cases up.
+  useEffect(() => {
+    if (!roomId) return;
+    const handlePageHide = (e: PageTransitionEvent) => {
+      if (e.persisted) return;
+      navigator.sendBeacon(`/api/rooms/${roomId}/leave`);
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, [roomId]);
+
   // Anyone who is no longer in this room belongs on the dashboard, not on a
   // page they can't act on. That covers more than the Leave button: leaving
   // from a second tab, being in a room that got torn down when the last
