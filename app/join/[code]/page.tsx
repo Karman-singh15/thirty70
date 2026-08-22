@@ -3,11 +3,12 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import { Loader2 } from "lucide-react";
+import { Loader2, Users, TriangleAlert } from "lucide-react";
 
 export default function JoinPage({ params }: { params: Promise<{ code: string }> }) {
   const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState("");
+  const [roomFull, setRoomFull] = useState(false);
   const { isSignedIn, isLoaded } = useAuth();
   const router = useRouter();
 
@@ -35,6 +36,9 @@ export default function JoinPage({ params }: { params: Promise<{ code: string }>
       if (res.ok) {
         router.replace(`/room/${data.room.id}`);
       } else {
+        // 409 is specifically the room-at-capacity case (see lib/rooms.ts
+        // joinRoom) — worth its own message rather than a generic error.
+        setRoomFull(res.status === 409);
         setError(data.error ?? "Failed to join room");
       }
     }
@@ -43,14 +47,37 @@ export default function JoinPage({ params }: { params: Promise<{ code: string }>
   }, [isLoaded, isSignedIn, inviteCode, router]);
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-zinc-950 text-zinc-400">
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-zinc-950 p-4 text-zinc-400">
       {error ? (
-        <>
-          <p className="text-red-400">{error}</p>
-          <a href="/dashboard" className="text-sm text-emerald-400 hover:underline">
+        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-8 text-center">
+          <div
+            className={`flex h-12 w-12 items-center justify-center rounded-full ${
+              roomFull ? "bg-amber-500/10" : "bg-red-500/10"
+            }`}
+          >
+            {roomFull ? (
+              <Users className="h-6 w-6 text-amber-400" />
+            ) : (
+              <TriangleAlert className="h-6 w-6 text-red-400" />
+            )}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <p className="text-sm font-medium text-zinc-200">
+              {roomFull ? "This room is full" : "Couldn't join room"}
+            </p>
+            <p className="text-sm text-zinc-500">
+              {roomFull
+                ? "Only 4 people are allowed in a room at a time. Ask the host to free up a spot, or start your own room."
+                : error}
+            </p>
+          </div>
+          <a
+            href="/dashboard"
+            className="mt-1 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-emerald-400"
+          >
             Go to dashboard
           </a>
-        </>
+        </div>
       ) : (
         <>
           <Loader2 className="h-8 w-8 animate-spin text-emerald-400" />

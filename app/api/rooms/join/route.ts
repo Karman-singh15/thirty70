@@ -25,12 +25,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid invite code" }, { status: 404 });
   }
 
-  const room = await joinRoom(
-    found.id,
-    userId,
-    user.fullName ?? user.username ?? "Anonymous",
-    user.imageUrl ?? ""
-  );
+  try {
+    const room = await joinRoom(
+      found.id,
+      userId,
+      user.fullName ?? user.username ?? "Anonymous",
+      user.imageUrl ?? ""
+    );
 
-  return NextResponse.json({ room });
+    return NextResponse.json({ room });
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 409 });
+  }
 }

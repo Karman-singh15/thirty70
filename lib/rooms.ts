@@ -5,6 +5,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { problems, roomParticipants, rooms, sessions, turns, users } from "@/lib/db/schema";
 import * as roomState from "@/lib/roomState";
+import { MAX_ROOM_PARTICIPANTS } from "@/lib/roomLimits";
 
 export interface Participant {
   userId: string;
@@ -292,13 +293,26 @@ export async function joinRoom(
 
   await ensureUser(userId, name, imageUrl);
 
-  await db
-    .insert(roomParticipants)
-    .values({ roomId, userId })
-    .onConflictDoUpdate({
-      target: [roomParticipants.roomId, roomParticipants.userId],
-      set: { leftAt: null },
-    });
+  // One statement so the capacity check and the insert can't race against a
+  // concurrent join: the WHERE only lets the insert (and thus the conflict
+  // update, for someone rejoining) happen if the room isn't already full,
+  // counted and blocked at the database level rather than in application
+  // code. The joining user's own row (if they're already active, e.g. a
+  // duplicate join call) is excluded from the count so re-joining an active
+  // membership is never itself blocked by the cap.
+  const result = await db.execute(sql`
+    INSERT INTO room_participants (room_id, user_id)
+    SELECT ${roomId}, ${userId}
+    WHERE (
+      SELECT COUNT(*) FROM room_participants
+      WHERE room_id = ${roomId} AND left_at IS NULL AND user_id <> ${userId}
+    ) < ${MAX_ROOM_PARTICIPANTS}
+    ON CONFLICT (room_id, user_id) DO UPDATE SET left_at = NULL
+    RETURNING user_id
+  `);
+  if (result.length === 0) {
+    throw new Error(`Room is full (max ${MAX_ROOM_PARTICIPANTS} participants)`);
+  }
 
   await db.update(rooms).set({ updatedAt: new Date() }).where(eq(rooms.id, roomId));
   await roomState.touchPresence(roomId, userId);

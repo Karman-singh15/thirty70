@@ -1359,3 +1359,58 @@ changes membership. No weakening of the check, just a different read path.
 the same 3 pre-existing problems. The store-level timings above are measured;
 the end-to-end endpoint timing is not, since reproducing it needs an
 authenticated session.
+
+---
+
+## Cap rooms at 4 people (free-tier limit)
+
+**Date:** 2026-08-22
+
+**Task:** Full-mesh WebRTC (every participant connects to every other one
+directly) stops scaling past a handful of people — bandwidth and CPU both
+grow per person with room size, since each device uploads its own camera
+once per peer it's sending to. Rather than let a room limp along past that
+point, we agreed to make 4 people a hard ceiling now, framed as the free
+tier's room size (a paid tier with an SFU behind it, for larger rooms, is a
+future project — not built here).
+
+**What changed:**
+- New `lib/roomLimits.ts` — `MAX_ROOM_PARTICIPANTS = 4`, free of any
+  runtime dependency so both server code and client components import the
+  same constant without either pulling in the other's stack.
+- `lib/rooms.ts` — `joinRoom`'s insert and its capacity check are now one
+  atomic statement (`INSERT ... SELECT ... WHERE (SELECT COUNT(*) ...) <
+  MAX_ROOM_PARTICIPANTS ON CONFLICT DO UPDATE`), so two people joining at
+  the same moment can't both slip past the check and land at 5 — the
+  database enforces it, not a check-then-insert race in application code.
+  The joining user's own row is excluded from the count, so someone
+  already active (a duplicate join call) or rejoining after leaving is
+  never blocked by their own past membership. A join that's turned away
+  throws, rather than silently returning null like a not-found room, so
+  the route can tell the two cases apart.
+- `app/api/rooms/join/route.ts` — catches that throw and returns `409`
+  with the message, instead of the generic room-not-found `404`.
+- `app/join/[code]/page.tsx` — the invite-link landing page now renders an
+  actual card (icon, heading, plain-language explanation, a way back to
+  the dashboard) instead of a bare line of red text, and reads the `409`
+  specifically to show "This room is full" rather than a generic error.
+- `components/ParticipantsList.tsx` — the header's participant count now
+  reads `{joined}/{MAX_ROOM_PARTICIPANTS} in room` at all times (e.g.
+  "4/4"), instead of the old online/total split — the cap is visible
+  before anyone hits it, not just at the moment a join is refused. Online
+  status is unchanged, still shown per-avatar via the presence dot.
+
+**Verified:** clean `tsc --noEmit`. `eslint` and a live dev-server boot were
+both still queued when this was written — the dev toolchain in this
+sandbox session was unusually slow to respond (long stretches at near-zero
+CPU on tsc, eslint, and `next dev` alike), separate from anything in this
+change. A static, pixel-matched preview of the two UI states (real markup
+and color values, copied out of the actual files) was rendered instead to
+confirm layout and copy read correctly.
+
+**Not verified in a browser:** the actual 409 path end to end — that
+needs a room already at 4 real members and a 5th real account attempting
+to join, which two sessions can't easily set up alone. Worth a real
+five-account pass before trusting this in production: confirm the 4th
+join succeeds, the 5th is refused with the popup shown above, and that
+someone leaving frees a slot for the next joiner.
