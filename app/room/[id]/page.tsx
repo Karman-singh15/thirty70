@@ -14,9 +14,11 @@ import { ResizeHandle } from "@/components/ResizeHandle";
 import { useLocalMedia } from "@/hooks/useLocalMedia";
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { useSharedEditor } from "@/hooks/useSharedEditor";
-import type { RoomSnapshot, SignalEvent } from "@/lib/editorDoc";
+import type { JudgeBroadcast, RoomSnapshot, SignalEvent } from "@/lib/editorDoc";
 import { usePendingActions } from "@/hooks/usePendingActions";
 import { TopProgressBar } from "@/components/TopProgressBar";
+import { LEETCODE_LANG_SLUGS } from "@/lib/leetcode";
+import { LeetCodeExtensionError, runOnLeetCode } from "@/lib/leetcodeBridge";
 
 const MIN_PROBLEM_WIDTH = 280;
 const MAX_PROBLEM_WIDTH = 800;
@@ -52,6 +54,7 @@ interface RoomData {
 }
 
 interface ProblemDetail {
+  questionId: string;
   questionFrontendId: string;
   title: string;
   titleSlug: string;
@@ -61,15 +64,6 @@ interface ProblemDetail {
   hints: string[];
   codeSnippets: { lang: string; langSlug: string; code: string }[];
 }
-
-const LANG_MAP: Record<string, string> = {
-  javascript: "javascript",
-  python: "python3",
-  java: "java",
-  cpp: "cpp",
-  go: "golang",
-  typescript: "typescript",
-};
 
 export default function RoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { userId: myUserId } = useAuth();
@@ -84,6 +78,9 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const widthsInitialized = useRef(false);
   const prefetchedProblem = useRef<ProblemDetail | null>(null);
   const { run, isPending, anyPending } = usePendingActions();
+  const [judgeBroadcast, setJudgeBroadcast] = useState<JudgeBroadcast | null>(null);
+  const [judgeDismissed, setJudgeDismissed] = useState(false);
+  const judgeInFlightRef = useRef(false);
 
   // Seed the panel widths from the room's actual size on first render
   // (roughly the old 70/30, 45%-of-70% split), then leave them alone —
@@ -180,6 +177,15 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     [myUserId, goToDashboard]
   );
 
+  // Run/Submit progress and results, broadcast to the whole room so everyone
+  // watching a turn sees the same loader and the same result, not just
+  // whoever clicked. "opening" is always the first stage of a fresh
+  // run/submit, so it's the signal that clears a previous dismissal.
+  const handleJudgeEvent = useCallback((judge: JudgeBroadcast) => {
+    setJudgeBroadcast(judge);
+    if (judge.status === "loading" && judge.stage === "opening") setJudgeDismissed(false);
+  }, []);
+
   // Fetches the problem body whenever the room's problem changes. The host
   // who picked it already has the details in hand, so they stash them (see
   // handleProblemSelect) and this skips a second trip to LeetCode.
@@ -239,6 +245,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     writerId: currentTurnUserId,
     onRoomEvent: handleRoomEvent,
     onSignal: handleSignalEvent,
+    onJudgeEvent: handleJudgeEvent,
   });
 
   async function handleProblemSelect(problem: {
@@ -260,7 +267,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
     const starterCode =
       detail?.codeSnippets?.find(
-        (s: { langSlug: string }) => s.langSlug === LANG_MAP[editor.language]
+        (s: { langSlug: string }) => s.langSlug === LEETCODE_LANG_SLUGS[editor.language]
       )?.code ??
       detail?.codeSnippets?.[0]?.code ??
       "";
@@ -293,9 +300,63 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   // provides one.
   function handleLanguageChange(newLang: string) {
     const snippet = problemDetail?.codeSnippets?.find(
-      (s) => s.langSlug === LANG_MAP[newLang]
+      (s) => s.langSlug === LEETCODE_LANG_SLUGS[newLang]
     );
     editor.setDocument(snippet?.code ?? editor.getCode(), newLang);
+  }
+
+  // Runs the extension bridge locally (only this browser has the LeetCode
+  // extension and session — see extension/README.md) and posts each stage,
+  // then the result, to the room's judge broadcast so everyone watching sees
+  // the same thing this client does, not just the one who clicked.
+  async function handleJudge(mode: "run" | "submit") {
+    if (!roomId || !myUserId || !problemDetail || judgeInFlightRef.current) return;
+    const myName = room?.participants.find((p) => p.userId === myUserId)?.name ?? "Someone";
+
+    const post = (judge: JudgeBroadcast) =>
+      fetch(`/api/rooms/${roomId}/judge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ judge }),
+      }).catch(() => {});
+
+    const langSlug = LEETCODE_LANG_SLUGS[editor.language];
+    if (!langSlug) {
+      await post({
+        status: "error",
+        mode,
+        message: `No LeetCode language mapping for "${editor.language}".`,
+        userId: myUserId,
+        name: myName,
+      });
+      return;
+    }
+
+    judgeInFlightRef.current = true;
+    await post({ status: "loading", mode, stage: "opening", userId: myUserId, name: myName });
+
+    try {
+      const result = await runOnLeetCode(
+        mode,
+        {
+          slug: problemDetail.titleSlug,
+          questionId: problemDetail.questionId,
+          langSlug,
+          code: editor.getCode(),
+          dataInput: mode === "run" ? problemDetail.exampleTestcases : undefined,
+        },
+        (stage) => void post({ status: "loading", mode, stage, userId: myUserId, name: myName })
+      );
+      await post({ status: "result", mode, result, userId: myUserId, name: myName });
+    } catch (err) {
+      const message =
+        err instanceof LeetCodeExtensionError || err instanceof Error
+          ? err.message
+          : "Something went wrong talking to the LeetCode extension.";
+      await post({ status: "error", mode, message, userId: myUserId, name: myName });
+    } finally {
+      judgeInFlightRef.current = false;
+    }
   }
 
   // The turn endpoints already return the fresh room in their response —
@@ -510,6 +571,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             readOnly={readOnly}
             writerLabel={writerLabel}
             connected={editor.connected}
+            canJudge={!!problemDetail}
+            onRun={() => handleJudge("run")}
+            onSubmit={() => handleJudge("submit")}
+            judgeState={judgeDismissed ? null : judgeBroadcast}
+            isJudgeSelf={judgeBroadcast?.userId === myUserId}
+            onCloseJudge={() => setJudgeDismissed(true)}
           />
         </div>
 

@@ -4,6 +4,97 @@ A running record of work done on this project, in plain language.
 
 ---
 
+## Run/Submit against LeetCode via a companion browser extension
+
+**Date:** 2026-08-23
+
+**Task:** Add Run and Submit buttons to the room editor, mirroring
+leetcode.com's own — Run grades against the public example test cases,
+Submit grades against LeetCode's real hidden suite so it counts toward the
+user's actual LeetCode streak/progress.
+
+**Approach:** LeetCode has no public submission API, and the real run/submit
+endpoints require an authenticated session — storing users' LeetCode session
+cookies on our own server was the first idea but was rejected in favor of a
+companion Chrome extension. The extension opens a hidden (`active: false`)
+`leetcode.com` tab and runs a content script inside it, so it calls
+LeetCode's `interpret_solution`/`submit` endpoints as same-origin requests —
+the browser attaches the user's existing LeetCode session automatically.
+Nothing sensitive is ever read, stored, or sent to thirty70's servers or DB;
+the whole feature is client-side, no backend changes were needed.
+
+**What changed:**
+- New `extension/` folder (kept separate from the Next.js app): a Manifest V3
+  extension — `background.js` (opens the hidden LeetCode tab and relays
+  messages), `content-scripts/leetcode.js` (calls LeetCode's run/submit
+  endpoints and polls for the graded result), and a README with load/setup
+  steps. Registered against thirty70's origin via `externally_connectable`.
+- `lib/leetcodeBridge.ts` — client-side wrapper around
+  `chrome.runtime.connect` that the website uses to talk to the extension,
+  with typed run/submit payloads and results.
+- `components/JudgePanel.tsx` — a slide-up panel covering the bottom half of
+  the code editor pane, showing a staged loader ("Opening LeetCode...",
+  "Running...", "Submitting...") and then per-testcase pass/fail (Run) or
+  Accepted/Wrong Answer + runtime/memory percentiles (Submit).
+- `components/CodeEditor.tsx` — added Run/Submit buttons (visible once a
+  problem is loaded, disabled when it isn't the user's turn) that drive the
+  bridge and render `JudgePanel`.
+- `lib/leetcode.ts` — added an exported `LEETCODE_LANG_SLUGS` map (our editor
+  language values -> LeetCode's langSlug values), replacing a duplicate map
+  that lived locally in the room page.
+- `app/room/[id]/page.tsx` — threads `questionId`/`exampleTestcases`/slug and
+  the shared editor's `getCode()` down into `CodeEditor`.
+- `.env.local` — added `NEXT_PUBLIC_LEETCODE_EXTENSION_ID` (empty; filled in
+  after loading the extension unpacked once, per its README).
+
+**Follow-up (same day):** a real Wrong Answer submit ("38/65 testcases
+passed") showed no detail on what failed — `normalizeResult()` for submit
+mode only ever mapped status/counts/runtime/memory, never the failing case.
+Added `failingCase` (input/actual/expected for the first hidden case that
+failed, when LeetCode's check response includes one) to the submit result
+shape and rendered it in `JudgePanel`.
+
+**Follow-up (same day): broadcast Run/Submit to the whole room.** Results
+were only visible locally to whoever clicked. Buttons stay turn-gated (only
+the turn holder can trigger a run/submit — that's still enforced both by
+hiding the buttons in `CodeEditor` and, now, server-side), but the loader and
+result are now broadcast so everyone in the room watches the same thing.
+
+- `lib/editorDoc.ts` — added `JudgeBroadcast`/`JudgeEvent` wire types
+  (loading stage / result / error, tagged with the acting user's id + name).
+- `lib/roomState.ts` — added `publishJudgeEvent`, publishing onto the same
+  Redis room channel turn/presence/media updates already use.
+- `app/api/rooms/[id]/judge/route.ts` — new route the acting client posts
+  each stage/result/error to. Re-validates turn-holder status server-side
+  (same `currentTurnUserId === userId, else membership` rule as the editor's
+  write path) so the broadcast can't be forged by someone who isn't holding
+  the turn, even though the extension call itself still only ever runs in
+  the turn holder's own browser (it's the only one with their LeetCode
+  session).
+- `hooks/useSharedEditor.ts` — added an `onJudgeEvent` callback alongside the
+  existing `onRoomEvent`/`onSignal`, fed by the same SSE connection/Redis
+  subscriber.
+- `app/room/[id]/page.tsx` — judge state (and the actual `runOnLeetCode`
+  call + POSTing progress to the new route) moved up from `CodeEditor` into
+  the page, since broadcasting needs `roomId`/`myUserId`/participant names
+  that `CodeEditor` didn't otherwise need. A local `judgeDismissed` flag lets
+  each viewer close their own view of the panel without affecting anyone
+  else; it resets whenever a fresh run/submit's first ("opening") stage
+  arrives.
+- `components/CodeEditor.tsx` — now purely presentational for this feature:
+  takes `onRun`/`onSubmit`/`judgeState`/`isJudgeSelf`/`onCloseJudge` as props
+  instead of owning the extension call itself.
+- `components/JudgePanel.tsx` — header now reads "Submitting…"/"Run Result"
+  for the acting user and "{name} — submitting…" etc. for everyone else
+  watching.
+
+**Scope notes for next time:** an Accepted submit still doesn't write back
+into the `turns`/`sessions` tables (turn `result: "solved"`, session
+completion) — left open pending a decision on whether a non-Accepted submit
+should still end the turn.
+
+---
+
 ## Set up PostgreSQL (persistent data) + Redis (live room state)
 
 **Date:** 2026-08-15

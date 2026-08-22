@@ -43,3 +43,6 @@ next-env.d.ts
 
 # vendored by scripts/copy-monaco.mjs
 /public/monaco
+
+# private key backing the extension's stable id — keep local, never commit
+/extension/extension_key.pem

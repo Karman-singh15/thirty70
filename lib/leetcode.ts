@@ -1,5 +1,17 @@
 const LEETCODE_GRAPHQL_URL = "https://leetcode.com/graphql";
 
+// Our editor's language values -> LeetCode's own langSlug values. Used both
+// to pick the right starter code snippet and, for Run/Submit, to tell the
+// LeetCode extension bridge which judge to run against.
+export const LEETCODE_LANG_SLUGS: Record<string, string> = {
+  javascript: "javascript",
+  python: "python3",
+  java: "java",
+  cpp: "cpp",
+  go: "golang",
+  typescript: "typescript",
+};
+
 async function leetcodeFetch<T>(query: string, variables: Record<string, unknown>): Promise<T> {
   const res = await fetch(LEETCODE_GRAPHQL_URL, {
     method: "POST",

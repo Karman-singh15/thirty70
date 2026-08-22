@@ -4,6 +4,8 @@ import type {
   DocChange,
   EditorDoc,
   EditorEvent,
+  JudgeBroadcast,
+  JudgeEvent,
   RoomEvent,
   RoomParticipant,
   RoomProblemSummary,
@@ -239,6 +241,8 @@ export type {
   DocChange,
   EditorDoc,
   EditorEvent,
+  JudgeBroadcast,
+  JudgeEvent,
   RoomEvent,
   RoomSnapshot,
   SignalEvent,
@@ -314,6 +318,13 @@ export async function publishEditorEvent(
 
 export async function publishRoomEvent(roomId: string, room: RoomSnapshot): Promise<void> {
   await redis.publish(roomChannel(roomId), JSON.stringify({ type: "room", room }));
+}
+
+// A Run/Submit's loading stage, result, or error — rides the same room
+// channel as everything else, so it reaches every connected client alongside
+// turn/presence/media updates rather than needing its own subscription.
+export async function publishJudgeEvent(roomId: string, judge: JudgeBroadcast): Promise<void> {
+  await redis.publish(roomChannel(roomId), JSON.stringify({ type: "judge", judge }));
 }
 
 // Handshake messages ride the same room channel as everything else — every

@@ -3,6 +3,8 @@
 // any runtime dependency so the browser can import them without dragging the
 // Redis client along.
 
+import type { JudgeMode, JudgeResult, JudgeStage } from "@/lib/leetcodeBridge";
+
 export interface EditorDoc {
   code: string;
   language: string;
@@ -98,3 +100,23 @@ export interface SignalPayload {
 }
 
 export type SignalEvent = { type: "signal"; to: string } & SignalPayload;
+
+// --- Run/Submit (LeetCode judge) ---
+//
+// Only the turn holder can trigger a run or submit (enforced both by hiding
+// the buttons and by the API route that accepts this), but the result is
+// broadcast to the whole room over the same channel as everything else above
+// — everyone watching sees the same loader and the same result, not just
+// whoever clicked.
+
+export interface JudgeActor {
+  userId: string;
+  name: string;
+}
+
+export type JudgeBroadcast =
+  | ({ status: "loading"; mode: JudgeMode; stage: JudgeStage } & JudgeActor)
+  | ({ status: "result"; mode: JudgeMode; result: JudgeResult } & JudgeActor)
+  | ({ status: "error"; mode: JudgeMode; message: string } & JudgeActor);
+
+export type JudgeEvent = { type: "judge"; judge: JudgeBroadcast };
