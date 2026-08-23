@@ -5,7 +5,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { problems, roomParticipants, rooms, sessions, turns, users } from "@/lib/db/schema";
 import * as roomState from "@/lib/roomState";
-import { MAX_ROOM_PARTICIPANTS } from "@/lib/roomLimits";
+import { getMaxParticipants, type UserPlan } from "@/lib/roomLimits";
 
 export interface Participant {
   userId: string;
@@ -26,6 +26,7 @@ export interface Room {
   name: string;
   ownerId: string;
   ownerName: string;
+  ownerPlan: UserPlan;
   inviteCode: string;
   participants: Participant[];
   problem: RoomProblem | null;
@@ -129,6 +130,7 @@ async function loadRoomMetaFromDb(
     name: roomRow.name,
     ownerId: roomRow.ownerId,
     ownerName: roomRow.owner?.name ?? "Unknown",
+    ownerPlan: roomRow.owner?.plan ?? "free",
     inviteCode: roomRow.inviteCode,
     participants: participantRows.map((p) => ({
       userId: p.userId,
@@ -210,6 +212,7 @@ export async function getRoom(id: string): Promise<Room | undefined> {
     name: meta.name,
     ownerId: meta.ownerId,
     ownerName: meta.ownerName,
+    ownerPlan: meta.ownerPlan,
     inviteCode: meta.inviteCode,
     participants: meta.participants,
     problem: meta.problem,
@@ -322,8 +325,13 @@ export async function joinRoom(
   name: string,
   imageUrl: string
 ): Promise<Room | null> {
-  const roomRow = await db.query.rooms.findFirst({ where: eq(rooms.id, roomId) });
+  const roomRow = await db.query.rooms.findFirst({
+    where: eq(rooms.id, roomId),
+    with: { owner: true },
+  });
   if (!roomRow) return null;
+
+  const maxParticipants = getMaxParticipants(roomRow.owner?.plan ?? "free");
 
   await ensureUser(userId, name, imageUrl);
 
@@ -333,19 +341,21 @@ export async function joinRoom(
   // counted and blocked at the database level rather than in application
   // code. The joining user's own row (if they're already active, e.g. a
   // duplicate join call) is excluded from the count so re-joining an active
-  // membership is never itself blocked by the cap.
+  // membership is never itself blocked by the cap. The cap itself depends on
+  // the room owner's plan (see getMaxParticipants), so it's resolved above
+  // rather than baked into the query as a constant.
   const result = await db.execute(sql`
     INSERT INTO room_participants (room_id, user_id)
     SELECT ${roomId}, ${userId}
     WHERE (
       SELECT COUNT(*) FROM room_participants
       WHERE room_id = ${roomId} AND left_at IS NULL AND user_id <> ${userId}
-    ) < ${MAX_ROOM_PARTICIPANTS}
+    ) < ${maxParticipants}
     ON CONFLICT (room_id, user_id) DO UPDATE SET left_at = NULL
     RETURNING user_id
   `);
   if (result.length === 0) {
-    throw new Error(`Room is full (max ${MAX_ROOM_PARTICIPANTS} participants)`);
+    throw new Error(`Room is full (max ${maxParticipants} participants)`);
   }
 
   await db.update(rooms).set({ updatedAt: new Date() }).where(eq(rooms.id, roomId));

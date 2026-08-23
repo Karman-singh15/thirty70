@@ -18,6 +18,7 @@ import type { JudgeBroadcast, RoomSnapshot, SignalEvent } from "@/lib/editorDoc"
 import { usePendingActions } from "@/hooks/usePendingActions";
 import { TopProgressBar } from "@/components/TopProgressBar";
 import { LEETCODE_LANG_SLUGS } from "@/lib/leetcode";
+import { getMaxParticipants } from "@/lib/roomLimits";
 import { LeetCodeExtensionError, runOnLeetCode } from "@/lib/leetcodeBridge";
 
 const MIN_PROBLEM_WIDTH = 280;
@@ -33,6 +34,7 @@ function clamp(value: number, min: number, max: number) {
 interface RoomData {
   id: string;
   ownerId: string;
+  ownerPlan: "free" | "pro";
   name: string;
   inviteCode: string;
   participants: { userId: string; name: string; imageUrl: string }[];
@@ -537,6 +539,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         onlineUserIds={room.onlineUserIds}
         micOn={room.micOn}
         cameraOn={room.cameraOn}
+        maxParticipants={getMaxParticipants(room.ownerPlan)}
         myMicOn={myMicOn}
         myCameraOn={myCameraOn}
         mediaError={mediaError}

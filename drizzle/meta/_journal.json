@@ -15,6 +15,13 @@
       "when": 1786734965917,
       "tag": "0001_sad_zzzax",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787483228506,
+      "tag": "0002_naive_morlocks",
+      "breakpoints": true
     }
   ]
 }

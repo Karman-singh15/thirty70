@@ -9,11 +9,19 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
+export const userPlanEnum = pgEnum("user_plan", ["free", "pro"]);
+
 // Users mirror Clerk identities so rooms/sessions/turns can have real FKs.
 export const users = pgTable("users", {
   id: text("id").primaryKey(), // Clerk user id
   name: text("name").notNull(),
   imageUrl: text("image_url"),
+  plan: userPlanEnum("plan").notNull().default("free"),
+  // Set once a Dodo customer/subscription exists for this user, so webhooks
+  // that arrive without our metadata (e.g. a dashboard-initiated change)
+  // can still be matched back to a row. Null until their first checkout.
+  dodoCustomerId: text("dodo_customer_id"),
+  dodoSubscriptionId: text("dodo_subscription_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

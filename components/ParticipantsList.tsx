@@ -1,7 +1,6 @@
 "use client";
 
 import { Mic } from "lucide-react";
-import { MAX_ROOM_PARTICIPANTS } from "@/lib/roomLimits";
 
 interface Participant {
   userId: string;
@@ -14,6 +13,7 @@ interface ParticipantsListProps {
   onlineUserIds: string[];
   micOn: string[];
   cameraOn: string[];
+  maxParticipants: number;
 }
 
 export function ParticipantsList({
@@ -21,6 +21,7 @@ export function ParticipantsList({
   onlineUserIds,
   micOn,
   cameraOn,
+  maxParticipants,
 }: ParticipantsListProps) {
   const onlineCount = participants.filter((p) => onlineUserIds.includes(p.userId)).length;
 
@@ -63,7 +64,7 @@ export function ParticipantsList({
         })}
       </div>
       <span className="text-xs text-zinc-500" title={`${onlineCount} online now`}>
-        {participants.length}/{MAX_ROOM_PARTICIPANTS} in room
+        {participants.length}/{maxParticipants} in room
       </span>
     </div>
   );

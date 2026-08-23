@@ -207,6 +207,7 @@ export interface CachedRoomMeta {
   name: string;
   ownerId: string;
   ownerName: string;
+  ownerPlan: "free" | "pro";
   inviteCode: string;
   participants: RoomParticipant[];
   problem: RoomProblemSummary | null;

@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { Users, Code2 } from "lucide-react";
 import { Header } from "@/components/Header";
 import { CreateRoomButton } from "@/components/CreateRoomButton";
 import { JoinRoomForm } from "@/components/JoinRoomForm";
+import { PlanStatus } from "@/components/PlanStatus";
 
 interface RoomSummary {
   id: string;
@@ -38,11 +39,16 @@ export default function DashboardPage() {
       <Header />
 
       <main className="mx-auto max-w-4xl px-6 py-10">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-zinc-100">Your Rooms</h1>
-          <p className="mt-1 text-sm text-zinc-400">
-            Create a room, invite friends, and solve LeetCode problems together.
-          </p>
+        <div className="mb-8 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-zinc-100">Your Rooms</h1>
+            <p className="mt-1 text-sm text-zinc-400">
+              Create a room, invite friends, and solve LeetCode problems together.
+            </p>
+          </div>
+          <Suspense fallback={null}>
+            <PlanStatus />
+          </Suspense>
         </div>
 
         <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

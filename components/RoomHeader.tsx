@@ -14,6 +14,7 @@ interface RoomHeaderProps {
   onlineUserIds: string[];
   micOn: string[];
   cameraOn: string[];
+  maxParticipants: number;
   myMicOn: boolean;
   myCameraOn: boolean;
   mediaError: string | null;
@@ -30,6 +31,7 @@ export function RoomHeader({
   onlineUserIds,
   micOn,
   cameraOn,
+  maxParticipants,
   myMicOn,
   myCameraOn,
   mediaError,
@@ -64,6 +66,7 @@ export function RoomHeader({
           onlineUserIds={onlineUserIds}
           micOn={micOn}
           cameraOn={cameraOn}
+          maxParticipants={maxParticipants}
         />
         <div className="h-6 w-px bg-zinc-800" />
         <InviteLink inviteCode={inviteCode} />
