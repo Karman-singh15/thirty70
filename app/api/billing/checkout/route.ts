@@ -14,11 +14,19 @@ export async function POST() {
     return NextResponse.json({ error: "Account has no email on file" }, { status: 400 });
   }
 
-  const checkoutUrl = await createUpgradeCheckout(
-    userId,
-    email,
-    user.fullName ?? user.username ?? "Anonymous"
-  );
-
-  return NextResponse.json({ checkoutUrl });
+  try {
+    const checkoutUrl = await createUpgradeCheckout(
+      userId,
+      email,
+      user.fullName ?? user.username ?? "Anonymous"
+    );
+    return NextResponse.json({ checkoutUrl });
+  } catch (err) {
+    // Otherwise a Dodo API error (bad product id, unverified live account,
+    // network failure, ...) falls through to Next's default HTML error
+    // page instead of JSON, which breaks the client's res.json() call.
+    console.error("Dodo checkout session creation failed:", err);
+    const message = err instanceof Error ? err.message : "Could not start checkout";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
 }

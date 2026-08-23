@@ -57,8 +57,11 @@ export function PlanStatus() {
     setUpgrading(true);
     try {
       const res = await fetch("/api/billing/checkout", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Could not start checkout");
+      // A route crash before it can call NextResponse.json() (an uncaught
+      // throw, a redirect from middleware) lands here as a non-JSON body —
+      // don't let that surface as "Unexpected end of JSON input".
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) throw new Error(data?.error ?? "Could not start checkout");
       window.location.href = data.checkoutUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start checkout");
