@@ -242,9 +242,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
   // Mirrors the server's rule: before any turn has started anyone may write;
   // once a turn is under way, only its holder. Computed here rather than after
-  // the loading return so the editor hook below can be given it.
+  // the loading return so the editor hook below can be given it. No problem
+  // picked yet means there's nothing to write, so the editor stays locked.
   const currentTurnUserId = room?.currentTurnUserId ?? null;
-  const canEdit = currentTurnUserId === null || currentTurnUserId === myUserId;
+  const hasProblem = !!room?.problem;
+  const canEdit = hasProblem && (currentTurnUserId === null || currentTurnUserId === myUserId);
 
   // useWebRTC (below) needs to exist before it can receive anything, but
   // useSharedEditor (which owns the one EventSource these signals arrive on)

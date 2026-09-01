@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { isRoomMemberCached } from "@/lib/rooms";
+import { getRoomMeta, isRoomMemberCached } from "@/lib/rooms";
 import {
   casSetCode,
   getLiveState,
@@ -109,6 +109,18 @@ export async function POST(
     : await isRoomMemberCached(id, userId);
   if (!allowed) {
     return NextResponse.json({ error: "Not your turn" }, { status: 403 });
+  }
+
+  // Nothing to write until a problem is picked. currentTurnUserId can be null
+  // both before a problem is chosen and mid-session (turn cleared with no one
+  // left in the queue), so membership alone can't tell those apart — check the
+  // cached meta directly, which is a Redis read, not the Postgres round trip
+  // the comment above is guarding against.
+  if (!live.currentTurnUserId) {
+    const meta = await getRoomMeta(id);
+    if (!meta?.problem) {
+      return NextResponse.json({ error: "No problem selected" }, { status: 403 });
+    }
   }
 
   // Cursor-only movement. Ephemeral: broadcast, never stored, so it can't
