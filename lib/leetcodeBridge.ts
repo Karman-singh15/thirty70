@@ -84,10 +84,6 @@ function getExtensionId(): string | null {
   return process.env.NEXT_PUBLIC_LEETCODE_EXTENSION_ID ?? null;
 }
 
-export function isExtensionConfigured(): boolean {
-  return !!getExtensionId();
-}
-
 export function runOnLeetCode(
   mode: JudgeMode,
   payload: JudgePayload,

@@ -556,7 +556,6 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         onLeave={handleLeaveRoom}
         leavePending={isPending("leave")}
         isHost={isOwner}
-        participantCount={room.participants.length}
       />
 
       <TurnBar

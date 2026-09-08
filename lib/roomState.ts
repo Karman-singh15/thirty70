@@ -103,24 +103,6 @@ export async function getLiveState(roomId: string): Promise<LiveRoomState> {
   };
 }
 
-// Unconditional write — for callers that already own the whole document and
-// aren't racing anyone (the legacy /sync autosave path). Returns the new
-// document version so the caller can announce it.
-export async function setLiveCode(
-  roomId: string,
-  code: string,
-  language: string
-): Promise<number> {
-  const key = stateKey(roomId);
-  const results = await redis
-    .pipeline()
-    .hset(key, { code, language, updatedAt: Date.now() })
-    .hincrby(key, "docVersion", 1)
-    .expire(key, STATE_TTL_SECONDS)
-    .exec();
-  return Number(results?.[1]?.[1] ?? 0);
-}
-
 // Starts a fresh session: resets code + turn state, keeps nothing from the last problem.
 //
 // docVersion deliberately keeps counting up rather than restarting at 1.
@@ -235,18 +217,6 @@ export async function setCachedRoomMeta(
 
 export async function invalidateRoomMeta(roomId: string): Promise<void> {
   await redis.del(metaKey(roomId));
-}
-
-// For changes small enough to apply in place — which keeps the mutation's own
-// response on the fast path instead of forcing the next read back to Postgres.
-// A miss is a no-op: there's nothing cached to go stale.
-export async function patchCachedRoomMeta(
-  roomId: string,
-  patch: Partial<CachedRoomMeta>
-): Promise<void> {
-  const meta = await getCachedRoomMeta(roomId);
-  if (!meta) return;
-  await setCachedRoomMeta(roomId, { ...meta, ...patch });
 }
 
 // --- Shared document (the collaborative editor) ---

@@ -49,8 +49,6 @@ export interface LeetCodeProblemDetail {
   content: string;
   difficulty: string;
   exampleTestcases: string;
-  metaData: string;
-  sampleTestCase: string;
   hints: string[];
   codeSnippets: { lang: string; langSlug: string; code: string }[];
 }
@@ -102,8 +100,6 @@ export async function getProblem(titleSlug: string): Promise<LeetCodeProblemDeta
         content
         difficulty
         exampleTestcases
-        metaData
-        sampleTestCase
         hints
         codeSnippets { lang langSlug code }
       }

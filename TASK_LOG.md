@@ -1923,3 +1923,46 @@ current one under the one-room rule, and merely opening then closing the
 live room fires the `pagehide` leave beacon, which would drop their other
 tab out of the room too. The change is two constants in the same clamped
 expression; it takes effect on the next room page load.
+
+---
+
+## Repo audit: removed dead code, catalogued architectural risks
+
+**Date:** 2026-09-09
+
+**Task:** Sweep the whole repo for unnecessary code to delete, and for
+architectural decisions worth revisiting.
+
+**What changed (deletions only — no behaviour change):**
+- `lib/roomState.ts` — dropped `patchCachedRoomMeta` (never called; every
+  caller uses `setCachedRoomMeta` with a spread instead) and `setLiveCode`
+  (only reachable through the legacy whole-document save below).
+- `lib/rooms.ts` — dropped `updateRoomCode` and the `UpdateCodeResult` type.
+  The live editor path (`/api/rooms/[id]/editor`, compare-and-set + deltas)
+  replaced it; no client sends a code-only body any more. Also dropped
+  `Room.code` / `Room.language`: nothing reads them, and `GET
+  /api/rooms/[id]` was shipping the entire editor document (up to
+  `MAX_DOC_CHARS`, 200k) in a response the client uses only for name/owner/
+  invite code — `/stream` sends the document a moment later regardless.
+- `app/api/rooms/[id]/sync/route.ts` — removed the unreachable code-only
+  branch. The route now does exactly one thing (set the problem); comment
+  updated to say the name is a leftover.
+- `lib/leetcodeBridge.ts` — dropped `isExtensionConfigured` (never called).
+- `lib/leetcode.ts` — stopped requesting `metaData` and `sampleTestCase` from
+  LeetCode's GraphQL API; neither is read anywhere, and `metaData` is a large
+  JSON blob that was being fetched and cached for nothing.
+- `components/RoomHeader.tsx` — removed the `participantCount` prop, which
+  duplicated `participants.length` from the prop right next to it.
+
+**Verified:** clean `tsc --noEmit`; `next build` succeeds; `eslint` unchanged
+at the same 3 pre-existing `react-hooks/set-state-in-effect` errors
+(`app/room/[id]/page.tsx` ×2, `hooks/useBillingPlan.ts` ×1).
+
+**Not changed, reported instead:** turn-timeout latency now bounded by the
+20s SSE heartbeat; no `maxDuration` on the SSE route (Vercel will cut the
+stream at the platform default and each reconnect opens a fresh Redis
+subscriber); Pro's 8-person cap on full-mesh WebRTC with no TURN; unvalidated
+`judge.result` payload that can crash every other client's render; the
+write-only `sessions`/`turns` tables and the never-read `rooms.status`
+column; the dashboard's room *list* under a one-room-per-user invariant; and
+a README that still describes an in-memory store with 1.5s polling.

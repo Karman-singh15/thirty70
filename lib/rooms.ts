@@ -30,8 +30,6 @@ export interface Room {
   inviteCode: string;
   participants: Participant[];
   problem: RoomProblem | null;
-  code: string;
-  language: string;
   turnDurationSeconds: number;
   turnOrder: string[];
   currentTurnUserId: string | null;
@@ -41,8 +39,6 @@ export interface Room {
   createdAt: number;
   updatedAt: number;
 }
-
-export type UpdateCodeResult = "ok" | "not_member" | "not_your_turn";
 
 const MIN_TURN_SECONDS = 10;
 const MAX_TURN_SECONDS = 3600;
@@ -271,8 +267,6 @@ export async function getRoom(id: string): Promise<Room | undefined> {
     inviteCode: meta.inviteCode,
     participants: meta.participants,
     problem: meta.problem,
-    code: liveState.code,
-    language: liveState.language,
     turnDurationSeconds: meta.turnDurationSeconds,
     turnOrder,
     currentTurnUserId: liveState.currentTurnUserId,
@@ -526,36 +520,6 @@ function persistSessionChange(
       .where(and(eq(sessions.roomId, roomId), eq(sessions.status, "in_progress")));
     await db.insert(sessions).values({ id: sessionId, roomId, problemSlug });
   });
-}
-
-// Fast path for the debounced editor autosave — writes only to Redis.
-// Gated to whoever currently holds the turn (once a turn cycle has started).
-export async function updateRoomCode(
-  roomId: string,
-  code: string,
-  language: string,
-  userId: string
-): Promise<UpdateCodeResult> {
-  const [membership, turn] = await Promise.all([
-    db.query.roomParticipants.findFirst({
-      where: and(
-        eq(roomParticipants.roomId, roomId),
-        eq(roomParticipants.userId, userId),
-        isNull(roomParticipants.leftAt)
-      ),
-    }),
-    roomState.getCurrentTurn(roomId),
-  ]);
-  if (!membership) return "not_member";
-  if (turn && turn.userId !== userId) return "not_your_turn";
-
-  const version = await roomState.setLiveCode(roomId, code, language);
-  // Whole-document write, so everyone resets onto it. The live editor path
-  // (/api/rooms/[id]/editor) sends incremental changes instead; this one
-  // stays for callers that only have the finished text.
-  await roomState.publishEditorEvent(roomId, { type: "doc", version, code, language });
-  await roomState.touchPresence(roomId, userId);
-  return "ok";
 }
 
 async function endCurrentTurn(

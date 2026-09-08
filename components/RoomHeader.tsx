@@ -24,7 +24,6 @@ interface RoomHeaderProps {
   onLeave: () => void;
   leavePending?: boolean;
   isHost?: boolean;
-  participantCount?: number;
 }
 
 export function RoomHeader({
@@ -43,7 +42,6 @@ export function RoomHeader({
   onLeave,
   leavePending = false,
   isHost = false,
-  participantCount = 1,
 }: RoomHeaderProps) {
   const [confirmingLeave, setConfirmingLeave] = useState(false);
 
@@ -52,7 +50,7 @@ export function RoomHeader({
   // you rather than leaving a membership behind.
   const askToLeave = () => setConfirmingLeave(true);
 
-  const lastOneOut = participantCount <= 1;
+  const lastOneOut = participants.length <= 1;
   const description = lastOneOut
     ? "You're the only one here, so the room will be closed and the code in it discarded."
     : isHost
