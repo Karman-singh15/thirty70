@@ -84,16 +84,22 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const [judgeDismissed, setJudgeDismissed] = useState(false);
   const judgeInFlightRef = useRef(false);
 
-  // Seed the panel widths from the room's actual size on first render
-  // (roughly the old 70/30, 45%-of-70% split), then leave them alone —
-  // from here on out, sizing is entirely up to the user dragging the handles.
+  // Seed the panel widths from the room's actual size on first render, then
+  // leave them alone — from here on out, sizing is entirely up to the user
+  // dragging the handles. The three panes are not equals: the editor is what
+  // people are actually looking at for the whole turn, so it opens with half
+  // the row and the problem and participant columns split the rest. Reading
+  // the problem and watching faces both work fine in a quarter each; writing
+  // code in a third does not.
   useEffect(() => {
     if (widthsInitialized.current || !room || !mainRowRef.current) return;
     const totalWidth = mainRowRef.current.clientWidth;
     if (totalWidth > 0) {
-      setProblemWidth(clamp(Math.round(totalWidth * 0.7 * 0.45), MIN_PROBLEM_WIDTH, MAX_PROBLEM_WIDTH));
+      setProblemWidth(
+        clamp(Math.round(totalWidth * 0.25), MIN_PROBLEM_WIDTH, MAX_PROBLEM_WIDTH)
+      );
       setParticipantsWidth(
-        clamp(Math.round(totalWidth * 0.3), MIN_PARTICIPANTS_WIDTH, MAX_PARTICIPANTS_WIDTH)
+        clamp(Math.round(totalWidth * 0.25), MIN_PARTICIPANTS_WIDTH, MAX_PARTICIPANTS_WIDTH)
       );
     }
     widthsInitialized.current = true;
@@ -549,6 +555,8 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         onToggleCamera={toggleCamera}
         onLeave={handleLeaveRoom}
         leavePending={isPending("leave")}
+        isHost={isOwner}
+        participantCount={room.participants.length}
       />
 
       <TurnBar

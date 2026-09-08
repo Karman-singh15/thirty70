@@ -5,6 +5,8 @@ const isPublicRoute = createRouteMatcher([
   "/sign-in(.*)",
   "/sign-up(.*)",
   "/join/(.*)",
+  "/privacy",
+  "/terms",
   // Called by Dodo Payments directly, not from the browser — no Clerk
   // session to check. The route verifies Dodo's own signature instead.
   "/api/webhooks/dodo",

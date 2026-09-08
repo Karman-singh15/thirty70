@@ -1747,3 +1747,179 @@ recovered via `tsc`, `eslint`, and `next build` all passing clean
 afterward. Takeaway: don't use `git stash` as a scratch diffing tool on a
 tree with real uncommitted work — compare with `git show <sha>:<path> |
 diff -` or a worktree instead, so there's nothing for a failed pop to lose.
+
+---
+
+## UI overhaul — new landing page, sidebar app shell, competitive mode, settings
+
+**Date:** 2026-09-06
+
+**Task:** Replace the whole UI. New landing page; signed-in users land on a
+dashboard that sits inside a persistent left sidebar carrying a mode
+switcher (Rooms / Competitive) and, at its foot, a profile block with
+settings and the Pro subscription. Ran the `redesign-existing-projects`
+design skill's audit over the existing pages first — the fixes below track
+its findings (generic 3-card feature row, no empty/loading states, no
+active-nav indication, missing 404/legal/skip-link, flat surfaces).
+
+**What changed:**
+- `app/(app)/layout.tsx` — new route group holding every signed-in surface
+  behind one shell: `<Sidebar />` plus a `<main>`. The group parens keep the
+  URLs (`/dashboard`, `/competitive`, `/settings`) unchanged, so nothing
+  that links to `/dashboard` had to move. `Sidebar` is wrapped in
+  `Suspense` because it reads `useSearchParams()` (via the billing hook) —
+  without it the whole group drops off the static path.
+- `components/dashboard/Sidebar.tsx` — brand mark, nav (`Rooms`,
+  `Competitive`) with an active state driven by `usePathname`, and a footer
+  block: inline "Upgrade to Pro" (hidden once the user is Pro), Clerk
+  avatar + name, plan line, and a gear linking to `/settings`.
+- `hooks/useBillingPlan.ts` — the plan-fetch / post-checkout polling /
+  upgrade-redirect logic lifted out of `PlanStatus` so the sidebar pill and
+  the settings card share one implementation instead of two copies of the
+  `?upgrade=success` poll.
+- `components/PlanStatus.tsx` — now the settings page's billing card (plan
+  name + perk list + upgrade CTA) rather than a dashboard-header pill; the
+  compact plan display lives in the sidebar.
+- `app/(app)/dashboard/page.tsx` — moved from `app/dashboard/`. Header
+  removed (the shell provides it), plan widget removed (now in the
+  sidebar), skeleton rows replace the "Loading rooms..." text, and the
+  empty state is a composed block rather than a bare line.
+- `app/(app)/competitive/page.tsx` — new. Competitive mode has no backend
+  yet, so this is an honest "in development" page (1v1 duels, brackets, a
+  local-only notify toggle) instead of a dead nav item.
+- `app/(app)/settings/page.tsx` — new. Account row with Clerk's
+  `openUserProfile()` for credential management, the subscription card, and
+  an explicit sign-out.
+- `app/page.tsx` — rebuilt landing page: asymmetric hero with a static room
+  mockup instead of the centered-hero-plus-three-equal-cards layout, a
+  two-up feature row, a "two ways to show up" section previewing
+  Rooms/Competitive, and a footer with legal links.
+- `app/privacy/page.tsx`, `app/terms/page.tsx` — new, so the footer links
+  aren't dead. Both added to `proxy.ts`'s public-route matcher since they
+  must render signed-out.
+- `app/not-found.tsx` — new branded 404.
+- `app/layout.tsx` — skip-to-content link, OG metadata.
+- `app/globals.css` — smooth scroll, tabular figures, selection colour, a
+  focus-visible ring, an SVG-noise `.grain-overlay`, and a `fade-in-up`
+  entry animation.
+- `app/sign-in/…`, `app/sign-up/…` — brand mark above the Clerk card and
+  `appearance.variables` matched to the palette (note: Clerk 7 renamed the
+  theming keys — it's `colorForeground` / `colorMutedForeground`, not
+  `colorText` / `colorTextSecondary`, which fail typecheck).
+
+**Untouched:** `app/room/[id]` and `app/join/[code]`. The room is a
+full-bleed editor surface, not a dashboard page, so it keeps its own
+`Header` and stays outside the shell.
+
+**Verified:** clean `tsc --noEmit`; clean `next build` with `/dashboard`,
+`/competitive`, `/settings`, `/privacy`, `/terms` all still prerendered
+static. `eslint` back at the pre-existing baseline of 3 errors (2 in
+`app/room/[id]/page.tsx`, 1 `set-state-in-effect` that moved with the
+billing logic from `PlanStatus.tsx` into `useBillingPlan.ts`). Walked the
+running dev server in Chrome: landing (redirect temporarily stubbed to see
+the signed-out view, then restored), dashboard, competitive, and settings
+all render, nav active states track the route, no console errors.
+
+**Not done:** competitive mode is presentation only — no matchmaking,
+rooms, or scoring behind it, and the notify button doesn't persist
+anywhere.
+
+---
+
+## Leaving a room: confirmation on the way out, one room per user, host succession
+
+**Date:** 2026-09-06
+
+**Task:** The back arrow in the room header walked out of the page without
+ever leaving the room, so the membership stayed behind. It now asks first
+and actually removes you. On top of that: a user may only be in one room at
+a time, and a host who leaves hands the room to the next person in the turn
+queue rather than taking it with them.
+
+**What changed:**
+- `components/ConfirmDialog.tsx` — new. Small modal (backdrop click, Escape,
+  focus on the confirm button). Deliberately not `window.confirm()`: that
+  blocks the tab, which in a room means the realtime stream and the turn
+  clock stall behind the prompt.
+- `components/RoomHeader.tsx` — the back arrow was a `<Link href="/dashboard">`,
+  which is exactly the hole: a client-side navigation fires no `pagehide`,
+  so the beacon in `app/room/[id]/page.tsx` never ran and the person stayed
+  a member of a room they'd walked out of. It's now a button, and both it
+  and the existing Leave button open the same confirmation. The dialog's
+  wording follows the situation — last one out ("the room will be closed"),
+  host ("the next person in the turn queue becomes the host"), or a plain
+  member who can rejoin with the invite link — which needs the two new
+  props, `isHost` and `participantCount`.
+- `lib/rooms.ts` — `leaveOtherRooms(userId, keepRoomId)`, called at the end
+  of `createRoom` and `joinRoom`. After, never before: a join that turns out
+  to be full shouldn't cost someone the room they were already in. One room
+  per person is what the rest of the app already assumes — presence, the
+  turn slot, and the WebRTC mesh are all per-user, and a stale membership
+  would keep occupying a seat against the room's cap and a place in its
+  rotation.
+- `lib/rooms.ts` — `leaveRoom` promotes a new host when the departing user
+  owned the room and anyone is left: `nextInQueue()` walks the turn order
+  from the leaver, wrapping, for the first member still present, falling
+  back to the longest-standing member if the rotation hasn't been seeded
+  yet. Consequence worth knowing: the participant cap follows the new host's
+  plan, so a Pro-sized room inherited by a free host can't grow further
+  (nobody already inside is removed).
+- `lib/editorDoc.ts`, `lib/rooms.ts` — `RoomSnapshot` now carries `ownerId`
+  and `ownerPlan`. Without them a promoted host's client kept hiding the
+  host-only controls until a refresh, since ownership was only ever seeded
+  by the one-shot `GET /api/rooms/[id]`.
+- `lib/rooms.ts` — `deleteRoom` broadcasts a final snapshot with an empty
+  participant list before the row goes away. Found while testing: a second
+  tab sitting in a room that got disbanded just kept rendering it. Every
+  other exit broadcasts a list the client can find itself missing from, but
+  a deleted room can't broadcast for itself and there's no poll left to trip
+  over a 404. Clients already treat "I'm not in the participants" as "go to
+  the dashboard", so this reuses that path. Covers the empty-room sweep in
+  `getRoom` too.
+
+**Verified:** clean `tsc --noEmit` and `next build`; `eslint` unchanged at
+the pre-existing 3 errors. Walked it in Chrome against the dev server: back
+arrow opens the dialog, "Stay" dismisses it, "Leave room" removes you and
+lands on the dashboard with the room gone. Two-tab test of the one-room
+rule — in room "alpha", created "beta" from a second tab; the dashboard then
+listed only "beta", and (after the closure broadcast above) the tab still
+sitting in the disbanded room bounced itself to the dashboard.
+
+**Not verified:** host succession end to end — that needs a second account
+in the room, which this session had no way to sign in as. The transfer is
+covered by types and build only.
+
+**Note:** testing created and removed rooms in the dev database, and an
+existing empty test room named "ewf" was disbanded by the first leave test.
+
+---
+
+## Room panes open 25/50/25 instead of near-equal thirds
+
+**Date:** 2026-09-06
+
+**Task:** The three panes in a room (problem, editor, participants) opened at
+roughly equal thirds. The editor is the pane people are actually working in
+for the whole turn, so it should get the space.
+
+**What changed:**
+- `app/room/[id]/page.tsx` — the first-render seeding now gives the problem
+  and participant columns 25% of the row each, leaving the editor ~50%.
+  Previously it was `0.7 * 0.45` (31.5%) for the problem and `0.3` for
+  participants, which left the editor with about the same share as each
+  side pane. The existing min/max clamps are unchanged, so narrow windows
+  still floor at `MIN_PROBLEM_WIDTH`/`MIN_PARTICIPANTS_WIDTH` and very wide
+  ones still cap the side panes rather than letting them grow forever.
+  Seeding still happens once per page load — dragging a handle after that
+  is untouched.
+
+**Verified:** clean `tsc --noEmit`; `eslint` unchanged at the pre-existing 3
+errors.
+
+**Not verified in the browser, deliberately:** the account was sitting in a
+live room ("rfew") at the time. Both ways of checking this would have
+disrupted that session — creating a new room evicts the user from their
+current one under the one-room rule, and merely opening then closing the
+live room fires the `pagehide` leave beacon, which would drop their other
+tab out of the room too. The change is two constants in the same clamped
+expression; it takes effect on the next room page load.

@@ -1,11 +1,12 @@
 "use client";
 
-import Link from "next/link";
+import { useState } from "react";
 import { ArrowLeft, LogOut } from "lucide-react";
 import { InviteLink } from "@/components/InviteLink";
 import { ParticipantsList } from "@/components/ParticipantsList";
 import { MediaControls } from "@/components/MediaControls";
 import { Spinner } from "@/components/Spinner";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface RoomHeaderProps {
   roomName: string;
@@ -22,6 +23,8 @@ interface RoomHeaderProps {
   onToggleCamera: () => void;
   onLeave: () => void;
   leavePending?: boolean;
+  isHost?: boolean;
+  participantCount?: number;
 }
 
 export function RoomHeader({
@@ -39,16 +42,34 @@ export function RoomHeader({
   onToggleCamera,
   onLeave,
   leavePending = false,
+  isHost = false,
+  participantCount = 1,
 }: RoomHeaderProps) {
+  const [confirmingLeave, setConfirmingLeave] = useState(false);
+
+  // Going back and pressing Leave are the same departure — you can only be in
+  // one room at a time, so walking out the back door has to actually remove
+  // you rather than leaving a membership behind.
+  const askToLeave = () => setConfirmingLeave(true);
+
+  const lastOneOut = participantCount <= 1;
+  const description = lastOneOut
+    ? "You're the only one here, so the room will be closed and the code in it discarded."
+    : isHost
+      ? "You'll be removed from the room, and the next person in the turn queue becomes the host."
+      : "You'll be removed from the room. You can rejoin with the invite link while it's still open.";
+
   return (
     <div className="flex items-center justify-between gap-4 border-b border-zinc-800 px-4 py-2.5">
       <div className="flex min-w-0 items-center gap-3">
-        <Link
-          href="/dashboard"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+        <button
+          onClick={askToLeave}
+          disabled={leavePending}
+          aria-label="Leave room"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
         >
           <ArrowLeft className="h-4 w-4" />
-        </Link>
+        </button>
         <h1 className="truncate text-sm font-medium text-zinc-200">{roomName}</h1>
       </div>
 
@@ -72,7 +93,7 @@ export function RoomHeader({
         <InviteLink inviteCode={inviteCode} />
         <div className="h-6 w-px bg-zinc-800" />
         <button
-          onClick={onLeave}
+          onClick={askToLeave}
           disabled={leavePending}
           className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-zinc-400 hover:bg-red-500/10 hover:text-red-400 disabled:cursor-wait disabled:opacity-60"
         >
@@ -84,6 +105,17 @@ export function RoomHeader({
           {leavePending ? "Leaving…" : "Leave"}
         </button>
       </div>
+
+      <ConfirmDialog
+        open={confirmingLeave}
+        title="Leave this room?"
+        description={description}
+        confirmLabel="Leave room"
+        cancelLabel="Stay"
+        pending={leavePending}
+        onConfirm={onLeave}
+        onCancel={() => setConfirmingLeave(false)}
+      />
     </div>
   );
 }

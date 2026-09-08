@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { nanoid } from "nanoid";
 import { after } from "next/server";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { problems, roomParticipants, rooms, sessions, turns, users } from "@/lib/db/schema";
 import * as roomState from "@/lib/roomState";
@@ -58,8 +58,62 @@ const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
 // "last person explicitly left" path (leaveRoom) and the "everyone's been
 // offline long enough" path (getRoom).
 async function deleteRoom(roomId: string): Promise<void> {
+  // Announce the closure while the room can still be read. Every other exit
+  // broadcasts a participant list the departed client can find itself missing
+  // from, but a room that no longer exists can't broadcast for itself — and
+  // with polling gone there's no request left to trip over a 404. So the last
+  // thing this room ever says is "nobody is in here", which every connected
+  // client reads the same way it reads being removed: leave for the
+  // dashboard. Matters for a tab left open on a room its owner walked out of
+  // in another tab, and for the empty-room sweep in getRoom.
+  await broadcastRoomClosed(roomId);
   await db.delete(rooms).where(eq(rooms.id, roomId));
   await roomState.clearRoomState(roomId);
+}
+
+async function broadcastRoomClosed(roomId: string): Promise<void> {
+  const meta = await getRoomMeta(roomId);
+  if (!meta) return;
+
+  await roomState.publishRoomEvent(roomId, {
+    ownerId: meta.ownerId,
+    ownerPlan: meta.ownerPlan,
+    participants: [],
+    problem: meta.problem,
+    turnDurationSeconds: meta.turnDurationSeconds,
+    turnOrder: [],
+    currentTurnUserId: null,
+    turnNumber: 0,
+    turnEndsAt: null,
+    turnPausedRemainingMs: null,
+    onlineUserIds: [],
+    micOn: [],
+    cameraOn: [],
+  });
+}
+
+// A user belongs to exactly one room at a time. Their editor, presence, turn
+// slot and WebRTC mesh all assume a single room per person, so entering one
+// walks them out of any other rather than leaving a membership behind that
+// still counts against that room's capacity and holds a place in its turn
+// rotation. Called after the new membership is established, never before —
+// a join that turns out to be full shouldn't cost someone the room they were
+// already in. In practice this finds zero or one row.
+async function leaveOtherRooms(userId: string, keepRoomId: string): Promise<void> {
+  const others = await db
+    .select({ roomId: roomParticipants.roomId })
+    .from(roomParticipants)
+    .where(
+      and(
+        eq(roomParticipants.userId, userId),
+        isNull(roomParticipants.leftAt),
+        ne(roomParticipants.roomId, keepRoomId)
+      )
+    );
+
+  for (const { roomId } of others) {
+    await leaveRoom(roomId, userId);
+  }
 }
 
 function mapProblem(row: typeof problems.$inferSelect): RoomProblem {
@@ -92,6 +146,7 @@ export async function createRoom(
   await db.insert(rooms).values({ id, name, ownerId, inviteCode });
   await db.insert(roomParticipants).values({ roomId: id, userId: ownerId });
   await roomState.touchPresence(id, ownerId);
+  await leaveOtherRooms(ownerId, id);
   // Nothing cached yet for a brand-new id, so the getRoom below builds it.
 
   const room = await getRoom(id);
@@ -252,6 +307,8 @@ export async function getRoomSnapshot(
   if (!room) return null;
 
   return {
+    ownerId: room.ownerId,
+    ownerPlan: room.ownerPlan,
     participants: room.participants,
     problem: room.problem,
     turnDurationSeconds: room.turnDurationSeconds,
@@ -361,6 +418,7 @@ export async function joinRoom(
   await db.update(rooms).set({ updatedAt: new Date() }).where(eq(rooms.id, roomId));
   await roomState.touchPresence(roomId, userId);
   await roomState.addToTurnOrder(roomId, userId);
+  await leaveOtherRooms(userId, roomId);
   // The participant list changed — rebuild it rather than trying to patch it.
   await roomState.invalidateRoomMeta(roomId);
 
@@ -629,6 +687,24 @@ export async function resumeTurn(roomId: string, userId: string): Promise<Room |
   return room ?? null;
 }
 
+// Whoever sits after `userId` in the rotation and is still in the room,
+// wrapping around the end of the queue the way the turn order itself does.
+// Undefined if the queue holds nobody else who's still here.
+function nextInQueue(
+  order: string[],
+  userId: string,
+  stillHere: Set<string>
+): string | undefined {
+  const start = order.indexOf(userId);
+  if (start === -1) return order.find((id) => id !== userId && stillHere.has(id));
+
+  for (let step = 1; step <= order.length; step++) {
+    const candidate = order[(start + step) % order.length];
+    if (candidate !== userId && stillHere.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 export async function leaveRoom(roomId: string, userId: string): Promise<void> {
   await db
     .update(roomParticipants)
@@ -674,11 +750,30 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
   const remaining = await db
     .select({ userId: roomParticipants.userId })
     .from(roomParticipants)
-    .where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)));
+    .where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)))
+    // Join order, so the fallback host below is the longest-standing member.
+    .orderBy(roomParticipants.joinedAt);
 
   if (remaining.length === 0) {
     await deleteRoom(roomId);
   } else {
+    // The host walking out doesn't end the room — the next person in the turn
+    // queue inherits it, so problem-picking, pause/resume and turn-length
+    // stay available to whoever is still in there. The turn order is the
+    // queue people actually see, so it decides the succession; a room whose
+    // rotation hasn't been seeded yet falls back to join order. Note the
+    // room's participant cap follows the new host's plan from here on (see
+    // getMaxParticipants in joinRoom) — nobody already inside is removed by
+    // that, but a free host can't grow a Pro-sized room any further.
+    if (meta?.ownerId === userId) {
+      const stillHere = new Set(remaining.map((r) => r.userId));
+      const nextHost = nextInQueue(order, userId, stillHere) ?? remaining[0].userId;
+      await db
+        .update(rooms)
+        .set({ ownerId: nextHost, updatedAt: new Date() })
+        .where(eq(rooms.id, roomId));
+    }
+
     // The participant list changed for everyone still here.
     await roomState.invalidateRoomMeta(roomId);
     const room = await getRoom(roomId);

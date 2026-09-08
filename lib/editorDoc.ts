@@ -4,6 +4,7 @@
 // Redis client along.
 
 import type { JudgeMode, JudgeResult, JudgeStage } from "@/lib/leetcodeBridge";
+import type { UserPlan } from "@/lib/roomLimits";
 
 export interface EditorDoc {
   code: string;
@@ -67,6 +68,12 @@ export interface RoomProblemSummary {
 }
 
 export interface RoomSnapshot {
+  // Carried on every update because the host can change mid-room: when one
+  // leaves, the next person in the turn queue inherits it (see leaveRoom),
+  // and their client has to start showing the host-only controls without a
+  // refresh. ownerPlan rides along because the participant cap follows it.
+  ownerId: string;
+  ownerPlan: UserPlan;
   participants: RoomParticipant[];
   problem: RoomProblemSummary | null;
   turnDurationSeconds: number;
