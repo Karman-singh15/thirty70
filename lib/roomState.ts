@@ -1,4 +1,15 @@
 import { createRedisSubscriber, redis } from "@/lib/redis";
+import { report } from "@/lib/log";
+// The pure turn logic lives in its own module so it can be imported — and
+// tested — without opening a Redis connection. Re-exported here because every
+// caller already reaches for it through roomState.
+import {
+  isTurnExpired,
+  nextInRotation,
+  pickNextTurnHolder,
+} from "@/lib/turnRotation";
+
+export { isTurnExpired, nextInRotation, pickNextTurnHolder };
 import type {
   CursorPosition,
   DocChange,
@@ -215,7 +226,11 @@ export async function getCachedRoomMeta(roomId: string): Promise<CachedRoomMeta 
   if (!raw) return null;
   try {
     return JSON.parse(raw) as CachedRoomMeta;
-  } catch {
+  } catch (err) {
+    // Falling back to Postgres is correct, but a cache entry that won't parse
+    // means something wrote a bad value — silently re-reading it every request
+    // is how that goes unnoticed indefinitely.
+    report("room_meta.cache_corrupt", err, { roomId });
     return null;
   }
 }
@@ -529,45 +544,6 @@ export async function resumeTurn(roomId: string): Promise<{ turnEndsAt: number }
   return { turnEndsAt };
 }
 
-// Walks `order` starting just after `afterUserId` and returns the first
-// entry `eligible` accepts, wrapping around the end the way the rotation
-// itself does. An `afterUserId` of null — or one that isn't in `order` at
-// all, which is what a player already removed from the queue looks like —
-// starts the walk from the front.
-//
-// Every "who goes next" question in the app is this walk with a different
-// notion of eligible, so it lives in one place.
-export function nextInRotation(
-  order: string[],
-  afterUserId: string | null,
-  eligible: (userId: string) => boolean
-): string | undefined {
-  const startIndex = afterUserId ? order.indexOf(afterUserId) : -1;
-  for (let step = 1; step <= order.length; step++) {
-    const candidate = order[(startIndex + step) % order.length];
-    if (eligible(candidate)) return candidate;
-  }
-  return undefined;
-}
-
-// The next player who's actually online, so a turn never lands on someone
-// who isn't there to take it. Wrapping means a lone online player keeps
-// getting the turn back rather than the rotation stalling on them, and when
-// nobody in `order` is online at all it falls back to the plain next entry —
-// better to hand the turn to someone than strand the room without a holder
-// until they reconnect. Callers guarantee a non-empty `order`.
-export function pickNextTurnHolder(
-  order: string[],
-  onlineUserIds: string[],
-  afterUserId: string | null
-): string {
-  const online = new Set(onlineUserIds);
-  return (
-    nextInRotation(order, afterUserId, (id) => online.has(id)) ??
-    nextInRotation(order, afterUserId, () => true)!
-  );
-}
-
 // Rotates to the next *online* player in turnOrder after theirs, and starts
 // their timer — an offline participant is skipped rather than stalling the
 // room on someone who isn't there to take their turn.
@@ -668,26 +644,15 @@ export async function drainSignals(roomId: string, userId: string): Promise<Sign
   return raw.flatMap((entry) => {
     try {
       return [JSON.parse(entry) as SignalPayload];
-    } catch {
+    } catch (err) {
+      // A dropped signal shows up as a peer that never connects, with nothing
+      // on screen to explain it.
+      report("signal.parse_failed", err, { roomId });
       return [];
     }
   });
 }
 
-// Whether the current turn's clock has run out. A paused turn never is: the
-// pause clears turnEndsAt and parks the remainder in turnPausedRemainingMs
-// (both checked here rather than relying on that invariant holding).
-//
-// Pure and synchronous on state a caller already has, so the hot write paths
-// can gate on it without paying for another read.
-export function isTurnExpired(state: LiveRoomState): boolean {
-  return (
-    state.currentTurnUserId !== null &&
-    state.turnPausedRemainingMs === null &&
-    state.turnEndsAt !== null &&
-    Date.now() >= state.turnEndsAt
-  );
-}
 
 // Ensures only one concurrent poller processes a given turn's timeout —
 // callers race this on every poll, so it must be a single atomic claim.

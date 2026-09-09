@@ -2577,3 +2577,119 @@ Plus clean `tsc --noEmit`, clean `eslint`, successful build.
 **Gotcha that cost a build:** the boot script is a template literal, so a
 backtick in one of its comments terminated the string and produced a parse
 error. Don't put backticks inside `THEME_BOOT_SCRIPT`.
+
+---
+
+## Made the app usable on a phone
+
+**Date:** 2026-09-09
+
+**Reported:** the deployed site on a phone, with every heading breaking one
+word per line.
+
+**Cause:** the app shell had no breakpoints at all. `Sidebar` is a fixed
+`w-60 shrink-0` rail, so on a 390px screen it took 240px and left the page
+~120px. An audit of the whole tree found only 6 files carrying any responsive
+class; 32 had none — including `app/room/[id]/page.tsx`, the core product.
+
+**Shell:** new `components/dashboard/MobileNav.tsx`, a top bar shown below
+`md`, with the sidebar now `hidden md:flex`. A bar rather than a hamburger
+drawer on purpose — there are exactly two destinations, so a drawer would add
+open/close state and an overlay to hide two links behind a tap. The layout is
+`flex-col md:flex-row`, so the nav sits above the page on a phone and beside
+it on a desktop.
+
+**Room page:** the three panes were 280–800px + 360px min + a participants
+rail — roughly 1000px minimum, so a phone just overflowed. They now stack
+vertically below `md`. The pixel widths (which are drag state, not layout
+constants) are passed as CSS custom properties so the media query can ignore
+them — `w-full md:w-[var(--problem-w)]` — instead of an inline `width` that
+applies at every size. `ResizeHandle` is hidden below `md`, since a
+column-resize grip has nothing to drag in a stacked column. The editor gets
+`h-[65dvh]` on a phone so it isn't a 40px sliver.
+
+**Room header:** six controls plus five dividers don't fit 390px, so the row
+wraps, and the participants list is hidden below `sm` — the same roster is in
+the panel under the editor.
+
+**Testing note worth keeping:** Chrome would not resize below **500px**, so
+window resizing cannot verify a real phone width. Rendering each route in a
+**390px iframe** does — an iframe gets its own viewport for media queries.
+Measured `documentElement.scrollWidth` against `innerWidth` on
+`/dashboard`, `/competitive`, `/settings`, `/room/[id]`, `/` and `/terms`:
+390 = 390 on all six, no horizontal overflow. The only elements extending past
+the viewport in the room are Monaco's own `lines-content` and `view-rulers`,
+which live inside the editor's scroll container and are supposed to.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, build succeeds, plus the
+iframe measurements above and screenshots of the dashboard and a live room at
+the narrowest width Chrome allows.
+
+**Gotcha:** `{/* … */}` directly inside `return (` is a sibling of the root
+element and fails with "JSX expressions must have one parent element". Use a
+plain `//` comment there — it sits in the parenthesised expression, not in
+JSX.
+
+---
+
+## P0 from the review: tests, CI, logging, error boundaries
+
+**Date:** 2026-09-10
+
+**Task:** Work the P0 findings from the repo review.
+
+**1 — Tests and CI, from zero.** Vitest, 37 tests over three files, and a
+GitHub Action running `typecheck` + `lint` + `test` on push and PR.
+
+Two extractions were needed first, and both are improvements in their own
+right rather than test scaffolding:
+
+- `lib/turnRotation.ts` — `nextInRotation`, `pickNextTurnHolder` and
+  `isTurnExpired` moved out of `lib/roomState.ts`, which opens an ioredis
+  connection at module scope. Checking a rotation rule should not require
+  connecting to Redis. `roomState` re-exports them, so every existing caller
+  is untouched.
+- `lib/judgePayload.ts` — the judge validator, lifted out of the route. This
+  is the one payload one client authors and every *other* client renders, so
+  a bad shape throws inside someone else's browser mid-turn. The route went
+  from 232 lines to 60.
+
+The tests cover the cases the log says were real bugs: the rotation walking
+from the front when the holder is no longer in `order` (a player who just
+left), a paused turn never expiring, and a non-array `cases` reaching
+`JudgePanel.map()`.
+
+**The review said to start with `lib/editorDoc.ts` — that was wrong.** It's
+types only, no runtime logic. The document CAS is a Lua script against Redis
+and wants an integration test, not a unit test.
+
+**A test caught a contract detail on the first run:** a judge result carries
+its own `mode`, which `parseResult` requires to match the broadcast's. My
+fixture omitted it and was correctly rejected. That invariant now has a test
+of its own.
+
+**2 — `lib/log.ts`.** Structured JSON lines, no dependency — Vercel parses
+them into searchable fields. `report()` is the seam an error tracker plugs
+into later: one call site rather than a dozen catch blocks to revisit.
+
+Wired into the five silent failures that actually hide something: corrupt
+cached room meta, a dropped WebRTC signal, a failed after-response history
+write, a room the cron sweep can't process, and a rejected Dodo webhook
+signature. **Deliberately not wired into the two SSE catches** — those are
+client-disconnect races, expected on every stream close, and logging them
+would bury the real entries.
+
+**3 — Error boundaries.** `app/error.tsx`, `app/global-error.tsx` (renders its
+own document, inline styles, since the failure may be in the layout that
+provides the fonts and tokens), and `app/room/[id]/error.tsx`. The room gets
+its own because its failure mode is specific — it renders state broadcast by
+other clients — and because the right first move is reconnecting, not
+reloading: the room and its timer are still running server-side. All three
+log with the error's `digest`, which is what ties a user's screenshot to the
+server log line.
+
+**Verified:** 37/37 tests, clean `tsc --noEmit`, clean `eslint`, successful
+build.
+
+**Also:** `@types/node` moved from ^20 to ^24. Vitest 5 requires it, and ^20
+was already behind the Node 26 runtime in use. Typecheck stayed clean.

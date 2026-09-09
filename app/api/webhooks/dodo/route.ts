@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { dodo } from "@/lib/dodo";
 import { applySubscriptionEvent } from "@/lib/billing";
+import { report } from "@/lib/log";
 
 // Every event that carries a subscription's current status — the payload
 // shape (data: SubscriptionsAPI.Subscription) is identical across all of
@@ -28,7 +29,10 @@ export async function POST(req: NextRequest) {
         "webhook-timestamp": req.headers.get("webhook-timestamp") ?? "",
       },
     });
-  } catch {
+  } catch (err) {
+    // Either Dodo's key rotated or something is forging webhooks at us.
+    // Both are worth knowing about; neither is visible from a 401 alone.
+    report("dodo_webhook.signature_rejected", err);
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 

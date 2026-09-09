@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { after } from "next/server";
 import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { report } from "@/lib/log";
 import { problems, roomParticipants, rooms, sessions, turns, users } from "@/lib/db/schema";
 import * as roomState from "@/lib/roomState";
 import { getMaxParticipants, type UserPlan } from "@/lib/roomLimits";
@@ -651,9 +652,12 @@ function finalTurnResult(
 // otherwise freeze the function the moment it returns.
 function runAfterResponse(work: () => Promise<unknown>): void {
   const run = () =>
-    work().catch(() => {
+    work().catch((err) => {
       // Best-effort by design. Live state lives in Redis, so a lost write
-      // here costs history, not correctness of the running room.
+      // here costs history, not correctness of the running room — but "the
+      // history tables are mysteriously empty" is a real bug to have to
+      // diagnose later, so it gets recorded.
+      report("after_response.work_failed", err);
     });
   try {
     after(run);

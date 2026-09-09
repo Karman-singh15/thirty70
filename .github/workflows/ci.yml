@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` runs the postinstall that copies Monaco into public/, which
+      # the typecheck doesn't need but which must not fail the install.
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      - run: npm test
+
+# `next build` is deliberately not run here. It needs Clerk, Postgres, Redis
+# and Dodo credentials to get through, and putting production secrets into CI
+# to prove that a build compiles is a bad trade — the typecheck already covers
+# the failure mode a build would catch. Add it behind a preview environment
+# with its own throwaway credentials if it's ever worth it.

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listRoomIdsForSweep, sweepIfAbandoned } from "@/lib/rooms";
 import { getOnlineUserIds } from "@/lib/roomState";
+import { log, report } from "@/lib/log";
 
 // Backstop for abandoned rooms.
 //
@@ -37,15 +38,20 @@ export async function GET(req: NextRequest) {
   // and firing hundreds of concurrent Postgres deletes at Neon's pooler to
   // save a few seconds on a job that runs once a day is a bad trade.
   let disbanded = 0;
+  let failed = 0;
   for (const roomId of roomIds) {
     try {
       const online = await getOnlineUserIds(roomId);
       if (await sweepIfAbandoned(roomId, online)) disbanded += 1;
-    } catch {
+    } catch (err) {
       // One bad room shouldn't cost the rest of the sweep; the next run
-      // retries it.
+      // retries it. Logged because a room that fails every single run would
+      // otherwise never surface — the sweep would just quietly do less.
+      report("sweep.room_failed", err, { roomId });
+      failed += 1;
     }
   }
 
-  return NextResponse.json({ scanned: roomIds.length, disbanded });
+  log.info("sweep.completed", { scanned: roomIds.length, disbanded, failed });
+  return NextResponse.json({ scanned: roomIds.length, disbanded, failed });
 }
