@@ -570,7 +570,9 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       : null;
 
   return (
-    <div className="flex h-dvh flex-col bg-canvas">
+    // `h-dvh` locks the three-pane desktop layout to the viewport. On a phone
+    // the panes stack, so the page has to be allowed to grow and scroll.
+    <div className="flex min-h-dvh flex-col bg-canvas md:h-dvh">
       <Header />
       <TopProgressBar active={anyPending} />
 
@@ -612,8 +614,14 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         durationPending={isPending("duration")}
       />
 
-      <div ref={mainRowRef} className="flex flex-1 overflow-hidden border-t border-line">
-        <div className="flex shrink-0 flex-col" style={{ width: problemWidth }}>
+      <div
+        ref={mainRowRef}
+        className="flex flex-1 flex-col border-t border-line md:flex-row md:overflow-hidden"
+      >
+        <div
+          className="flex w-full flex-col md:w-[var(--problem-w)] md:shrink-0"
+          style={{ "--problem-w": `${problemWidth}px` } as React.CSSProperties}
+        >
           <div className="border-b border-line p-3">
             {isOwner ? (
               <ProblemSearch onSelect={handleProblemSelect} />
@@ -632,7 +640,10 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           }
         />
 
-        <div className="flex-1 overflow-hidden" style={{ minWidth: MIN_EDITOR_WIDTH }}>
+        <div
+          className="flex h-[65dvh] flex-col overflow-hidden border-t border-line md:h-auto md:min-w-[var(--editor-min)] md:flex-1 md:border-t-0"
+          style={{ "--editor-min": `${MIN_EDITOR_WIDTH}px` } as React.CSSProperties}
+        >
           <CodeEditor
             language={editor.language}
             onLanguageChange={handleLanguageChange}
@@ -657,7 +668,10 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           }
         />
 
-        <div className="shrink-0 border-l border-line" style={{ width: participantsWidth }}>
+        <div
+          className="w-full border-t border-line md:w-[var(--participants-w)] md:shrink-0 md:border-l md:border-t-0"
+          style={{ "--participants-w": `${participantsWidth}px` } as React.CSSProperties}
+        >
           <ParticipantsPanel
             participants={room.participants}
             onlineUserIds={room.onlineUserIds}

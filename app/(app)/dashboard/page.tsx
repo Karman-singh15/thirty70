@@ -46,7 +46,7 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-4xl px-8 py-10">
+    <div className="mx-auto max-w-4xl px-5 py-8 sm:px-8 sm:py-10">
       <div className="mb-9 flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-ink">

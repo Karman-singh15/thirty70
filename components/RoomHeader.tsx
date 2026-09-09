@@ -60,7 +60,7 @@ export function RoomHeader({
       : "You'll be removed from the room. You can rejoin with the invite link while it's still open.";
 
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-2.5">
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-line px-3 py-2 sm:px-4 sm:py-2.5">
       <div className="flex min-w-0 items-center gap-3">
         <button
           onClick={askToLeave}
@@ -73,7 +73,7 @@ export function RoomHeader({
         <h1 className="truncate text-sm font-medium text-ink">{roomName}</h1>
       </div>
 
-      <div className="flex shrink-0 items-center gap-3">
+      <div className="flex shrink-0 items-center gap-2 sm:gap-3">
         <MediaControls
           micOn={myMicOn}
           cameraOn={myCameraOn}
@@ -81,14 +81,18 @@ export function RoomHeader({
           onToggleMic={onToggleMic}
           onToggleCamera={onToggleCamera}
         />
-        <div className="h-6 w-px bg-line" />
-        <ParticipantsList
-          participants={participants}
-          onlineUserIds={onlineUserIds}
-          micOn={micOn}
-          cameraOn={cameraOn}
-          maxParticipants={maxParticipants}
-        />
+        {/* Hidden on a phone: the same roster is in the participants panel
+            below the editor, and six controls plus dividers don't fit. */}
+        <div className="hidden h-6 w-px bg-line sm:block" />
+        <div className="hidden sm:block">
+          <ParticipantsList
+            participants={participants}
+            onlineUserIds={onlineUserIds}
+            micOn={micOn}
+            cameraOn={cameraOn}
+            maxParticipants={maxParticipants}
+          />
+        </div>
         <div className="h-6 w-px bg-line" />
         {/* The editor fills this screen, so the theme control has to be
             reachable from it — it used to live only in the dashboard sidebar,

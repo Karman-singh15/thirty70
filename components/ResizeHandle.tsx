@@ -41,11 +41,13 @@ export function ResizeHandle({ onResize }: ResizeHandleProps) {
       onPointerDown={handlePointerDown}
       role="separator"
       aria-orientation="vertical"
-      className="group relative w-2 shrink-0 cursor-col-resize touch-none select-none"
+      // Hidden below `md`: the panes stack vertically there, so a
+      // column-resize grip has nothing to drag.
+      className="group relative hidden w-2 shrink-0 cursor-col-resize touch-none select-none md:block"
     >
       <div
         className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
-          dragging ? "bg-accent" : "bg-elevated group-hover:bg-accent-soft"
+          dragging ? "bg-accent" : "bg-line group-hover:bg-line-strong"
         }`}
       />
     </div>

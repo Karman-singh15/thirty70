@@ -19,7 +19,10 @@ export function Sidebar() {
   const { plan, upgrading, upgrade } = useBillingPlan();
 
   return (
-    <aside className="flex h-dvh w-60 shrink-0 flex-col border-r border-line bg-canvas">
+    // Hidden below `md`, where MobileNav stands in for it: this rail is a
+    // fixed 240px, which on a 390px screen left the page barely a third of
+    // the width.
+    <aside className="hidden h-dvh w-60 shrink-0 flex-col border-r border-line bg-canvas md:flex">
       <Link
         href="/dashboard"
         className="flex items-center gap-2 px-5 py-5 text-ink"
