@@ -40,19 +40,19 @@ export function TurnQueue({
 
         return (
           <div key={p.userId} className="flex shrink-0 items-center gap-1">
-            {i > 0 && <ChevronRight className="h-3 w-3 shrink-0 text-zinc-700" />}
+            {i > 0 && <ChevronRight className="h-3 w-3 shrink-0 text-faint" />}
 
             <div
               title={`${p.name}${isCurrent ? " — playing now" : isNext ? " — up next" : ""}`}
               className={`flex items-center gap-1.5 rounded-full py-0.5 pl-0.5 pr-2 transition-colors ${
                 isCurrent
-                  ? "bg-emerald-500/15 ring-1 ring-emerald-500/50"
-                  : "bg-zinc-800/60"
+                  ? "bg-accent-soft ring-1 ring-accent"
+                  : "bg-elevated"
               }`}
             >
               <div
                 className={`flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-medium ${
-                  isCurrent ? "bg-emerald-500/25 text-emerald-100" : "bg-zinc-700 text-zinc-300"
+                  isCurrent ? "bg-accent-soft text-on-accent" : "bg-line-strong text-ink-soft"
                 }`}
               >
                 {p.imageUrl ? (
@@ -65,7 +65,7 @@ export function TurnQueue({
 
               <span
                 className={`whitespace-nowrap text-[11px] font-medium ${
-                  isCurrent ? "text-emerald-300" : isNext ? "text-zinc-400" : "text-zinc-500"
+                  isCurrent ? "text-accent-hover" : isNext ? "text-muted" : "text-muted"
                 }`}
               >
                 {isMe ? "You" : p.name.split(" ")[0]}

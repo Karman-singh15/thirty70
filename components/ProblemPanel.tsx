@@ -8,15 +8,15 @@ interface ProblemPanelProps {
 }
 
 const difficultyColor: Record<string, string> = {
-  Easy: "text-emerald-400 bg-emerald-400/10",
-  Medium: "text-amber-400 bg-amber-400/10",
-  Hard: "text-red-400 bg-red-400/10",
+  Easy: "text-success bg-success-soft",
+  Medium: "text-warn bg-warn-soft",
+  Hard: "text-danger bg-danger-soft",
 };
 
 export function ProblemPanel({ problem, loading }: ProblemPanelProps) {
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-zinc-500">
+      <div className="flex h-full items-center justify-center text-muted">
         Loading problem...
       </div>
     );
@@ -24,7 +24,7 @@ export function ProblemPanel({ problem, loading }: ProblemPanelProps) {
 
   if (!problem) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-zinc-500">
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
         <p className="text-sm">No problem selected</p>
         <p className="text-xs">Search for a LeetCode problem above</p>
       </div>
@@ -33,10 +33,10 @@ export function ProblemPanel({ problem, loading }: ProblemPanelProps) {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="border-b border-zinc-800 px-4 py-3">
+      <div className="border-b border-line px-4 py-3">
         <div className="flex items-center gap-2">
-          <span className="text-sm text-zinc-500">{problem.questionFrontendId}.</span>
-          <h2 className="text-base font-semibold text-zinc-100">{problem.title}</h2>
+          <span className="text-sm text-muted">{problem.questionFrontendId}.</span>
+          <h2 className="text-base font-semibold text-ink">{problem.title}</h2>
           <span
             className={`rounded px-2 py-0.5 text-xs font-medium ${difficultyColor[problem.difficulty] ?? ""}`}
           >
@@ -46,16 +46,16 @@ export function ProblemPanel({ problem, loading }: ProblemPanelProps) {
       </div>
 
       <div
-        className="prose prose-invert prose-sm max-w-none flex-1 overflow-y-auto px-4 py-4 prose-p:text-zinc-300 prose-pre:bg-zinc-900 prose-pre:text-zinc-200 prose-code:text-emerald-300"
+        className="prose prose-invert prose-sm max-w-none flex-1 overflow-y-auto px-4 py-4 prose-p:text-ink-soft prose-pre:bg-surface prose-pre:text-ink prose-code:text-accent-hover"
         dangerouslySetInnerHTML={{ __html: problem.content }}
       />
 
       {problem.hints.length > 0 && (
-        <details className="border-t border-zinc-800 px-4 py-3">
-          <summary className="cursor-pointer text-sm text-zinc-400 hover:text-zinc-200">
+        <details className="border-t border-line px-4 py-3">
+          <summary className="cursor-pointer text-sm text-muted hover:text-ink">
             Hints ({problem.hints.length})
           </summary>
-          <ul className="mt-2 space-y-1 text-sm text-zinc-400">
+          <ul className="mt-2 space-y-1 text-sm text-muted">
             {problem.hints.map((hint, i) => (
               <li key={i}>{hint}</li>
             ))}

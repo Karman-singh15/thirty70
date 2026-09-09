@@ -45,7 +45,7 @@ export function ResizeHandle({ onResize }: ResizeHandleProps) {
     >
       <div
         className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
-          dragging ? "bg-emerald-500" : "bg-zinc-800 group-hover:bg-emerald-500/60"
+          dragging ? "bg-accent" : "bg-elevated group-hover:bg-accent-soft"
         }`}
       />
     </div>

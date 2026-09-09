@@ -1,11 +1,14 @@
 "use client";
 
-import Editor, { OnMount } from "@monaco-editor/react";
+import { useEffect, useRef } from "react";
+import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
 import { Lock, Pencil, Play, Send, Users, WifiOff } from "lucide-react";
 // Imported for its side effect: repoints the Monaco loader at our own copy.
 // Must be in place before <Editor> below first mounts.
 import "@/lib/monacoSetup";
 import { JudgePanel } from "@/components/JudgePanel";
+import { useResolvedTheme } from "@/hooks/useTheme";
+import { applyMonacoTheme, MONACO_THEME } from "@/lib/monacoTheme";
 import type { JudgeBroadcast } from "@/lib/editorDoc";
 
 interface CodeEditorProps {
@@ -54,6 +57,28 @@ export function CodeEditor({
   isJudgeSelf = false,
   onCloseJudge,
 }: CodeEditorProps) {
+  // Monaco takes a theme by name and can't read CSS variables, so this is the
+  // one place the resolved light/dark value has to be handed over explicitly.
+  // It maps to our own theme (see lib/monacoTheme.ts), not to "vs"/"vs-dark" —
+  // those are Monaco's stock palettes and don't match the app's paper.
+  const isDark = useResolvedTheme() === "dark";
+  const monacoRef = useRef<Parameters<OnMount>[1] | null>(null);
+
+  // Defined before the editor is created so the `theme` prop below resolves to
+  // something Monaco already knows about.
+  const handleBeforeMount: BeforeMount = (monaco) => {
+    monacoRef.current = monaco;
+    applyMonacoTheme(monaco, isDark);
+  };
+
+  // Re-derive on every switch. The theme is built from CSS custom properties
+  // and `data-theme` is already stamped by the time this runs, so re-reading
+  // them here picks up the new palette; redefining under the same name is what
+  // makes Monaco repaint.
+  useEffect(() => {
+    if (monacoRef.current) applyMonacoTheme(monacoRef.current, isDark);
+  }, [isDark]);
+
   // Monaco types keystrokes into a hidden textarea, and browsers (plus
   // extensions like Grammarly) run spellcheck against it by default — which
   // shows up as red squiggles under code tokens that aren't real Monaco
@@ -71,12 +96,12 @@ export function CodeEditor({
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2">
         <select
           value={language}
           onChange={(e) => onLanguageChange(e.target.value)}
           disabled={readOnly}
-          className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 focus:outline-none disabled:opacity-50"
+          className="rounded border border-line-strong bg-elevated px-2 py-1 text-xs text-ink focus:outline-none disabled:opacity-50"
           title={
             readOnly
               ? "The language is shared — only the current player can change it"
@@ -91,7 +116,7 @@ export function CodeEditor({
         </select>
         <span
           className={`flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs ${
-            readOnly ? "text-zinc-500" : "bg-emerald-500/10 font-medium text-emerald-400"
+            readOnly ? "text-muted" : "bg-accent-soft font-medium text-accent"
           }`}
         >
           {readOnly ? (
@@ -113,7 +138,7 @@ export function CodeEditor({
               <button
                 onClick={onRun}
                 disabled={judgeState?.status === "loading"}
-                className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded border border-line-strong bg-elevated px-2.5 py-1 text-xs font-medium text-ink hover:bg-line-strong disabled:cursor-not-allowed disabled:opacity-50"
                 title="Run against the public example test cases"
               >
                 <Play className="h-3 w-3" />
@@ -122,7 +147,7 @@ export function CodeEditor({
               <button
                 onClick={onSubmit}
                 disabled={judgeState?.status === "loading"}
-                className="flex items-center gap-1.5 rounded bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded bg-accent-hover px-2.5 py-1 text-xs font-medium text-on-accent hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                 title="Submit to LeetCode"
               >
                 <Send className="h-3 w-3" />
@@ -131,14 +156,14 @@ export function CodeEditor({
             </>
           )}
           {writerLabel && (
-            <span className="flex items-center gap-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-400">
+            <span className="flex items-center gap-1.5 rounded bg-accent-soft px-1.5 py-0.5 text-xs text-accent">
               <Users className="h-3 w-3" />
               {writerLabel.name} · Ln {writerLabel.lineNumber}, Col {writerLabel.column}
             </span>
           )}
           {!connected && (
             <span
-              className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-amber-400"
+              className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-warn"
               title="Live updates are down — falling back to periodic refresh"
             >
               <WifiOff className="h-3 w-3" />
@@ -150,10 +175,11 @@ export function CodeEditor({
       <div className="relative flex-1 overflow-hidden">
         <Editor
           height="100%"
+          beforeMount={handleBeforeMount}
           language={language}
           defaultValue=""
           onMount={handleMount}
-          theme="vs-dark"
+          theme={MONACO_THEME}
           options={{
             minimap: { enabled: false },
             fontSize: 14,
@@ -161,6 +187,9 @@ export function CodeEditor({
             scrollBeyondLastLine: false,
             automaticLayout: true,
             padding: { top: 12 },
+            // See lib/monacoTheme.ts: the default rainbow brackets were the
+            // one thing on screen picking its own colours.
+            bracketPairColorization: { enabled: false },
             readOnly,
           }}
         />

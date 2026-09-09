@@ -11,9 +11,9 @@ interface ProblemSearchProps {
 }
 
 const difficultyColor: Record<string, string> = {
-  Easy: "text-emerald-400",
-  Medium: "text-amber-400",
-  Hard: "text-red-400",
+  Easy: "text-success",
+  Medium: "text-warn",
+  Hard: "text-danger",
 };
 
 export function ProblemSearch({ onSelect }: ProblemSearchProps) {
@@ -63,47 +63,47 @@ export function ProblemSearch({ onSelect }: ProblemSearchProps) {
   return (
     <div className="flex flex-col gap-3">
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search LeetCode problems..."
-          className="w-full rounded-lg border border-zinc-700 bg-zinc-900 py-2.5 pl-10 pr-4 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none"
+          className="w-full rounded-lg border border-line-strong bg-surface py-2.5 pl-10 pr-4 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
         />
         {loading && (
-          <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-zinc-500" />
+          <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted" />
         )}
       </div>
 
       {results.length > 0 && (
-        <ul className="max-h-64 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900">
+        <ul className="max-h-64 overflow-y-auto rounded-lg border border-line bg-surface">
           {results.map((p) => (
             <li key={p.titleSlug}>
               <button
                 onClick={() => handleSelect(p)}
                 disabled={p.paidOnly || selectingSlug !== null}
-                className={`flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-zinc-800 disabled:cursor-not-allowed ${
+                className={`flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-elevated disabled:cursor-not-allowed ${
                   selectingSlug === p.titleSlug
-                    ? "bg-emerald-500/10"
+                    ? "bg-accent-soft"
                     : "disabled:opacity-40"
                 }`}
               >
-                <span className="w-8 shrink-0 text-zinc-500">{p.frontendQuestionId}</span>
-                <span className="flex-1 truncate text-zinc-200">{p.title}</span>
+                <span className="w-8 shrink-0 text-muted">{p.frontendQuestionId}</span>
+                <span className="flex-1 truncate text-ink">{p.title}</span>
                 {selectingSlug === p.titleSlug ? (
-                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-emerald-400">
+                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-accent">
                     <Loader2 className="h-3 w-3 animate-spin" />
                     Loading…
                   </span>
                 ) : (
                   <span
-                    className={`shrink-0 text-xs ${difficultyColor[p.difficulty] ?? "text-zinc-400"}`}
+                    className={`shrink-0 text-xs ${difficultyColor[p.difficulty] ?? "text-muted"}`}
                   >
                     {p.difficulty}
                   </span>
                 )}
                 {p.paidOnly && (
-                  <span className="shrink-0 text-xs text-zinc-500">Premium</span>
+                  <span className="shrink-0 text-xs text-muted">Premium</span>
                 )}
               </button>
             </li>

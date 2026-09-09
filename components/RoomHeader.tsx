@@ -7,6 +7,7 @@ import { ParticipantsList } from "@/components/ParticipantsList";
 import { MediaControls } from "@/components/MediaControls";
 import { Spinner } from "@/components/Spinner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import type { ParticipantDisplay } from "@/lib/editorDoc";
 
 interface RoomHeaderProps {
@@ -59,17 +60,17 @@ export function RoomHeader({
       : "You'll be removed from the room. You can rejoin with the invite link while it's still open.";
 
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-zinc-800 px-4 py-2.5">
+    <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-2.5">
       <div className="flex min-w-0 items-center gap-3">
         <button
           onClick={askToLeave}
           disabled={leavePending}
           aria-label="Leave room"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-elevated hover:text-ink disabled:opacity-60"
         >
           <ArrowLeft className="h-4 w-4" />
         </button>
-        <h1 className="truncate text-sm font-medium text-zinc-200">{roomName}</h1>
+        <h1 className="truncate text-sm font-medium text-ink">{roomName}</h1>
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
@@ -80,7 +81,7 @@ export function RoomHeader({
           onToggleMic={onToggleMic}
           onToggleCamera={onToggleCamera}
         />
-        <div className="h-6 w-px bg-zinc-800" />
+        <div className="h-6 w-px bg-line" />
         <ParticipantsList
           participants={participants}
           onlineUserIds={onlineUserIds}
@@ -88,13 +89,18 @@ export function RoomHeader({
           cameraOn={cameraOn}
           maxParticipants={maxParticipants}
         />
-        <div className="h-6 w-px bg-zinc-800" />
+        <div className="h-6 w-px bg-line" />
+        {/* The editor fills this screen, so the theme control has to be
+            reachable from it — it used to live only in the dashboard sidebar,
+            which meant leaving the room to change how the room looks. */}
+        <ThemeToggle />
+        <div className="h-6 w-px bg-line" />
         <InviteLink inviteCode={inviteCode} />
-        <div className="h-6 w-px bg-zinc-800" />
+        <div className="h-6 w-px bg-line" />
         <button
           onClick={askToLeave}
           disabled={leavePending}
-          className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-zinc-400 hover:bg-red-500/10 hover:text-red-400 disabled:cursor-wait disabled:opacity-60"
+          className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-danger-soft hover:text-danger disabled:cursor-wait disabled:opacity-60"
         >
           {leavePending ? (
             <Spinner className="h-3.5 w-3.5" />

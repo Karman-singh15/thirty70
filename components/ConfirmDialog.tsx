@@ -42,7 +42,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-zinc-950/70 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-canvas/70 p-4 backdrop-blur-sm"
       onClick={onCancel}
     >
       <div
@@ -50,17 +50,17 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl shadow-black/50"
+        className="w-full max-w-sm rounded-2xl border border-line bg-surface p-6 shadow-2xl shadow-black/50"
       >
-        <h2 className="text-base font-medium text-zinc-100">{title}</h2>
-        <p className="mt-2 text-sm leading-relaxed text-zinc-400">
+        <h2 className="text-base font-medium text-ink">{title}</h2>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
           {description}
         </p>
         <div className="mt-6 flex justify-end gap-2">
           <button
             onClick={onCancel}
             disabled={pending}
-            className="rounded-lg px-4 py-2 text-sm font-medium text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
+            className="rounded-lg px-4 py-2 text-sm font-medium text-muted transition hover:bg-elevated hover:text-ink disabled:opacity-60"
           >
             {cancelLabel}
           </button>
@@ -68,7 +68,7 @@ export function ConfirmDialog({
             ref={confirmRef}
             onClick={onConfirm}
             disabled={pending}
-            className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-zinc-50 transition hover:bg-red-400 active:scale-[0.98] disabled:cursor-wait disabled:opacity-60"
+            className="rounded-lg bg-danger px-4 py-2 text-sm font-medium text-ink transition hover:bg-danger active:scale-[0.98] disabled:cursor-wait disabled:opacity-60"
           >
             {pending ? "Leaving…" : confirmLabel}
           </button>

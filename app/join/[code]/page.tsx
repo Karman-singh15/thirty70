@@ -47,25 +47,25 @@ export default function JoinPage({ params }: { params: Promise<{ code: string }>
   }, [isLoaded, isSignedIn, inviteCode, router]);
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-zinc-950 p-4 text-zinc-400">
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-canvas p-4 text-muted">
       {error ? (
-        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-8 text-center">
+        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-line bg-surface p-8 text-center">
           <div
             className={`flex h-12 w-12 items-center justify-center rounded-full ${
-              roomFull ? "bg-amber-500/10" : "bg-red-500/10"
+              roomFull ? "bg-warn-soft" : "bg-danger-soft"
             }`}
           >
             {roomFull ? (
-              <Users className="h-6 w-6 text-amber-400" />
+              <Users className="h-6 w-6 text-warn" />
             ) : (
-              <TriangleAlert className="h-6 w-6 text-red-400" />
+              <TriangleAlert className="h-6 w-6 text-danger" />
             )}
           </div>
           <div className="flex flex-col gap-1.5">
-            <p className="text-sm font-medium text-zinc-200">
+            <p className="text-sm font-medium text-ink">
               {roomFull ? "This room is full" : "Couldn't join room"}
             </p>
-            <p className="text-sm text-zinc-500">
+            <p className="text-sm text-muted">
               {roomFull
                 ? "Only 4 people are allowed in a room at a time. Ask the host to free up a spot, or start your own room."
                 : error}
@@ -73,14 +73,14 @@ export default function JoinPage({ params }: { params: Promise<{ code: string }>
           </div>
           <a
             href="/dashboard"
-            className="mt-1 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-emerald-400"
+            className="mt-1 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent"
           >
             Go to dashboard
           </a>
         </div>
       ) : (
         <>
-          <Loader2 className="h-8 w-8 animate-spin text-emerald-400" />
+          <Loader2 className="h-8 w-8 animate-spin text-accent" />
           <p className="text-sm">Joining room...</p>
         </>
       )}

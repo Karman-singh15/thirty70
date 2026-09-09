@@ -18,6 +18,7 @@ import type { JudgeBroadcast, RoomSnapshot, SignalEvent } from "@/lib/editorDoc"
 import type { LeetCodeProblemDetail } from "@/lib/leetcode";
 import { usePendingActions } from "@/hooks/usePendingActions";
 import { TopProgressBar } from "@/components/TopProgressBar";
+import { RoomBootLoader } from "@/components/RoomBootLoader";
 import { LEETCODE_LANG_SLUGS } from "@/lib/leetcode";
 import { getMaxParticipants } from "@/lib/roomLimits";
 import { LeetCodeExtensionError, runOnLeetCode } from "@/lib/leetcodeBridge";
@@ -528,10 +529,26 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   }, [receiveSignal]);
 
   if (!room) {
+    // Deliberately the same screen the create flow shows, so arriving here
+    // straight after "New Room" reads as one continuous wait rather than two
+    // unrelated loading states. Both lines are observed, not timed: the
+    // stream reports its own connection, and the snapshot arriving is what
+    // ends this branch.
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-400">
-        Loading room...
-      </div>
+      <RoomBootLoader
+        steps={[
+          {
+            id: "connect",
+            label: "connecting to room",
+            state: editor.connected ? "done" : "active",
+          },
+          {
+            id: "sync",
+            label: "syncing shared editor",
+            state: editor.connected ? "active" : "pending",
+          },
+        ]}
+      />
     );
   }
 
@@ -553,7 +570,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       : null;
 
   return (
-    <div className="flex h-screen flex-col bg-zinc-950">
+    <div className="flex h-dvh flex-col bg-canvas">
       <Header />
       <TopProgressBar active={anyPending} />
 
@@ -595,13 +612,13 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         durationPending={isPending("duration")}
       />
 
-      <div ref={mainRowRef} className="flex flex-1 overflow-hidden border-t border-zinc-800">
+      <div ref={mainRowRef} className="flex flex-1 overflow-hidden border-t border-line">
         <div className="flex shrink-0 flex-col" style={{ width: problemWidth }}>
-          <div className="border-b border-zinc-800 p-3">
+          <div className="border-b border-line p-3">
             {isOwner ? (
               <ProblemSearch onSelect={handleProblemSelect} />
             ) : (
-              <p className="text-xs text-zinc-500">Only the host can pick a problem.</p>
+              <p className="text-xs text-muted">Only the host can pick a problem.</p>
             )}
           </div>
           <div className="flex-1 overflow-hidden">
@@ -640,7 +657,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           }
         />
 
-        <div className="shrink-0 border-l border-zinc-800" style={{ width: participantsWidth }}>
+        <div className="shrink-0 border-l border-line" style={{ width: participantsWidth }}>
           <ParticipantsPanel
             participants={room.participants}
             onlineUserIds={room.onlineUserIds}

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { Swords, Users, Settings, Crown, Loader2 } from "lucide-react";
 import { useBillingPlan } from "@/hooks/useBillingPlan";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const NAV_ITEMS = [
   // Singular: a user is in at most one room at a time.
@@ -18,12 +19,12 @@ export function Sidebar() {
   const { plan, upgrading, upgrade } = useBillingPlan();
 
   return (
-    <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-zinc-900 bg-zinc-950">
+    <aside className="flex h-dvh w-60 shrink-0 flex-col border-r border-line bg-canvas">
       <Link
         href="/dashboard"
-        className="flex items-center gap-2 px-5 py-5 text-zinc-100"
+        className="flex items-center gap-2 px-5 py-5 text-ink"
       >
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-400 text-sm font-bold text-zinc-950">
+        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm font-bold text-on-accent">
           7
         </span>
         <span className="text-base font-semibold tracking-tight">
@@ -40,16 +41,16 @@ export function Sidebar() {
               href={href}
               className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition ${
                 active
-                  ? "bg-zinc-900 text-zinc-100"
-                  : "text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-200"
+                  ? "bg-surface text-ink"
+                  : "text-muted hover:bg-surface hover:text-ink"
               }`}
             >
               <Icon
-                className={`h-4 w-4 ${active ? "text-emerald-400" : ""}`}
+                className={`h-4 w-4 ${active ? "text-accent" : ""}`}
               />
               {label}
               {href === "/competitive" && (
-                <span className="ml-auto rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+                <span className="ml-auto rounded-full border border-warn-line bg-warn-soft px-1.5 py-0.5 text-[10px] font-medium text-warn">
                   soon
                 </span>
               )}
@@ -58,12 +59,12 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="mt-auto border-t border-zinc-900 p-3">
+      <div className="mt-auto border-t border-line p-3">
         {plan !== "pro" && (
           <button
             onClick={upgrade}
             disabled={upgrading || plan === null}
-            className="mb-2 flex w-full items-center gap-2 rounded-lg border border-zinc-800 px-3 py-2 text-xs font-medium text-zinc-300 transition hover:border-amber-500/40 hover:text-amber-400 disabled:cursor-wait disabled:opacity-60"
+            className="mb-2 flex w-full items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs font-medium text-ink-soft transition hover:border-warn-line hover:text-warn disabled:cursor-wait disabled:opacity-60"
           >
             {upgrading ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -74,6 +75,10 @@ export function Sidebar() {
           </button>
         )}
 
+        <div className="mb-2 flex justify-center">
+          <ThemeToggle />
+        </div>
+
         <div className="flex items-center gap-2 rounded-lg px-1 py-1">
           {isLoaded && user ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -83,25 +88,25 @@ export function Sidebar() {
               className="h-8 w-8 shrink-0 rounded-lg object-cover"
             />
           ) : (
-            <div className="h-8 w-8 shrink-0 animate-pulse rounded-lg bg-zinc-800" />
+            <div className="h-8 w-8 shrink-0 animate-pulse rounded-lg bg-elevated" />
           )}
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-zinc-200">
+            <p className="truncate text-sm font-medium text-ink">
               {isLoaded ? user?.fullName ?? user?.username ?? "Account" : ""}
             </p>
             {plan === "pro" ? (
-              <p className="flex items-center gap-1 text-[11px] text-amber-400">
+              <p className="flex items-center gap-1 text-[11px] text-warn">
                 <Crown className="h-3 w-3" /> Pro
               </p>
             ) : (
-              <p className="text-[11px] text-zinc-500">Free plan</p>
+              <p className="text-[11px] text-muted">Free plan</p>
             )}
           </div>
           <Link
             href="/settings"
             aria-label="Settings"
-            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition hover:bg-zinc-900 ${
-              pathname === "/settings" ? "text-emerald-400" : "text-zinc-500"
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition hover:bg-surface ${
+              pathname === "/settings" ? "text-accent" : "text-muted"
             }`}
           >
             <Settings className="h-4 w-4" />

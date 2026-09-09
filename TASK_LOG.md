@@ -2159,3 +2159,421 @@ once it's committed and deployed.
 duplicated generated files under `.next/types/` (`cache-life.d 2.ts`,
 `routes.d 3.ts` — file-sync artifacts, not source). Nothing in `app/` or
 `lib/`. Worth deleting `.next/` at some point so the typecheck is clean.
+
+---
+
+## Design pass: reduced motion, dvh, OG image, hero typography
+
+**Date:** 2026-09-09
+
+**Task:** Ran the redesign skill over the project. Worth recording what it
+*didn't* find: the app already had a considered design system — one accent
+(emerald) on an off-black `#09090b`, Geist, a grain overlay, tinted shadows,
+a real custom 404, empty states, loading skeletons, active nav states, a
+skip-link, `:focus-visible` rings and legal links. Most of the standard audit
+was already satisfied, so this was a narrow pass rather than a redesign.
+
+**What was actually wrong, and fixed:**
+
+- **Nothing honoured `prefers-reduced-motion`** — not one query in the
+  codebase. The `fade-in-up` entrance, smooth anchor scrolling and every
+  hover transition ran regardless of the OS setting. Added one global
+  override in `globals.css` rather than per-component, so it can't be
+  forgotten next time something animated is added.
+- **`100vh` in 12 places** (`min-h-screen`/`h-screen` across 10 files) — the
+  iOS Safari viewport bug, where the URL bar makes `vh` taller than the
+  visible area and the layout jumps on scroll. All migrated to `dvh`.
+- **No `og:image`.** Links shared anywhere rendered as a bare title. Added
+  `app/opengraph-image.tsx` using the file convention, plus the
+  `metadataBase` it needs to resolve to an absolute URL and a
+  `summary_large_image` Twitter card. Also added a `themeColor` viewport
+  export so mobile browser chrome stops showing a white bar above a
+  near-black app.
+- **Prose used tabular figures.** `body` sets `tabular-nums`, which is right
+  for the turn clock and wrong for LeetCode problem statements — constraints
+  like `2 <= nums.length <= 10^4` read with uneven gaps. Reset inside
+  `.prose`.
+- **A stray second accent**: the RoomPreview's second avatar was
+  `bg-blue-500`, the only non-emerald hue on the page outside the code
+  sample. Now neutral.
+- **Hero tracking.** Tightened to `-0.035em` with `leading-[1.02]`.
+  Deliberately *not* made larger: the hero column is ~571px at `max-w-6xl`,
+  and 72px type overflows "in the same room." into a bad wrap. Presence came
+  from tracking instead.
+
+**Two things worth knowing:**
+
+- `radial-gradient` does not survive satori (the renderer behind
+  `ImageResponse`). The landing hero's emerald bloom, ported to the OG image,
+  rendered as a hard green rectangle with visible seams — the box is drawn
+  but the falloff to transparent isn't. Tried a wide box and a square one;
+  both seamed. Settled on a full-canvas `linear-gradient`, which satori
+  handles correctly and which has no edge to seam at. **Don't reach for
+  radial gradients in `opengraph-image.tsx`.**
+- Left alone deliberately: the audit calls for replacing Lucide icons to
+  avoid the "default AI icon set" look, which would mean adding a dependency
+  for a purely cosmetic change — not worth it against the "check the
+  dependency file first" rule.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, `next build` succeeds and
+prerenders `/opengraph-image` statically. Rendered the OG PNG and inspected
+it (that's how the gradient bug was caught). Landing page and dashboard
+checked in a real browser at 1440px. **Not** verified at a mobile viewport —
+the resize didn't take effect, so the `dvh` change is reasoned but not
+visually confirmed on a phone-sized window.
+
+---
+
+## White + blue theme, with a real light/dark token layer
+
+**Date:** 2026-09-09
+
+**Task:** Move off the emerald-on-near-black look to a white-first, blue
+palette, and support both light and dark properly.
+
+**Why it needed a refactor first:** every colour in the app was a hard-coded
+Tailwind class — `bg-zinc-950`, `text-emerald-400` — 505 of them across 32
+files. `bg-zinc-950` means "near-black" in every context, so there was
+nowhere to say "this is the page ground, whatever the ground currently is".
+A second theme was impossible without naming colours by *role* first.
+
+**What was done:**
+
+- `app/globals.css` now defines semantic tokens — `canvas`, `surface`,
+  `elevated`, `line`, `ink`/`ink-soft`/`muted`/`faint`, `accent`, and the
+  status trio `success`/`warn`/`danger` — mapped into Tailwind via
+  `@theme inline`. Components use `bg-canvas`, `text-muted` and so on, and
+  need no `dark:` variants: the variable underneath changes. The
+  relationships invert between themes deliberately (in dark a panel is
+  *lighter* than the page; in light it's slightly darker).
+- Migrated all 505 usages with a scripted mapping table
+  (kept at `scratchpad/migrate_colors.py`).
+- Theme switching: `hooks/useTheme.ts` on `useSyncExternalStore` rather than
+  `useState` + effect, because hydrating from localStorage in an effect trips
+  the `react-hooks/set-state-in-effect` rule this repo treats as an error.
+  An inline boot script in `app/layout.tsx` stamps `data-theme` before first
+  paint so there's no flash. Three-way control (light/system/dark) in the
+  sidebar and landing nav — a two-state switch can't express "follow my OS".
+- Monaco is the one place that can't read CSS variables (it takes a theme by
+  name), so it gets the resolved value via `useResolvedTheme()`.
+- Clerk's `colorPrimary` and the OG image were both still emerald; both now
+  match.
+
+**Default is light, not system.** Initially built to follow the OS, which put
+anyone on a dark machine straight into the dark theme — including the user,
+who saw navy rather than the white this was meant to be. The design is
+white-first, so dark is now opt-in: chosen outright, or via "system". The
+`prefers-color-scheme` CSS fallbacks were removed for the same reason.
+
+**Gotcha worth remembering:** the migration's first pass mangled 56 classes.
+`text-zinc-50` was ordered before `text-zinc-500` in the mapping table, so it
+matched the prefix and left `text-ink0`. Any string-replacement table like
+this must order longer keys before their prefixes — the script now does, and
+prints leftovers so a miss is visible rather than silent.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, `next build` succeeds.
+Both themes checked in a real browser (light default confirmed, toggle
+switches to dark and back). OG image re-rendered and inspected. **Not**
+checked: the room page itself, which needs a live room with two accounts —
+so the Monaco theme swap and the judge/turn colours are reasoned and
+type-checked but not seen running.
+
+---
+
+## Adopted "Terminal Paper" as the visual direction
+
+**Date:** 2026-09-09
+
+**Task:** After reviewing seven mocked directions, picked Terminal Paper and
+built it into the app for real.
+
+**The direction:** a monospace instrument panel printed on warm paper rather
+than glowing on a black console. Two rules hold it together, both written at
+the top of `globals.css` so they survive the next person editing it:
+
+1. **`accent` is ink, not a colour.** Buttons, the logo mark and active states
+   are near-black on paper. Nothing competes for attention by being bright.
+2. **`live` is the only hue**, reserved for what is *ticking* — the turn
+   clock, its progress bar, the other player's caret. Rust (`#8A4B12`)
+   appearing anywhere that isn't live would stop it meaning anything.
+
+Status (`success`/`warn`/`danger`) stays separate from both: "Accepted" is a
+statement about the code, not about the brand.
+
+**What changed:**
+
+- All token values in `globals.css`, light and dark. Dark is warm near-black
+  (`#141311`), never a neutral grey — a cool dark under a warm light theme
+  reads as two different products. The accent inverts with the ground: it is
+  still "ink", which in dark is the light value.
+- **Fonts swapped to JetBrains Mono + Instrument Sans** (from Geist). Mono is
+  the *interface* font, not just the code font — that's the direction.
+  Ligatures are disabled on `body` because JetBrains Mono renders `->` and
+  `!=` as single glyphs that read as typos in UI labels; prose and code turn
+  them back on.
+- **Radius overridden once at the theme level** (`--radius-*: 2px`) rather
+  than editing the ~80 `rounded-lg`/`rounded-xl`/`rounded-2xl` classes already
+  written across 30-odd components. One block keeps the whole app consistent.
+- New `live` token trio wired through `TurnBar` (the "your turn" strip, the
+  ping dot, the label) and the collaborator caret.
+- Clerk's `colorPrimary` and the OG image follow the ink/paper/rust palette.
+
+**Caught by looking at it:** with mono as the body font, `/terms` and
+`/privacy` became walls of monospace running text — the exact weakness noted
+against this direction when it was still a mock. Fixed the way the mock
+already solved it for problem statements: long-form prose gets
+`font-sans`, headings keep `font-mono`. That split now applies in three
+places (problem panel, terms, privacy) and is the rule to follow for any new
+long-form page.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, `next build` succeeds.
+Dashboard checked in both themes and the legal pages re-checked after the
+prose fix. **Not** verified: the room page itself, which needs a live room
+with two accounts — so the Monaco `vs`/`vs-dark` swap, the turn-bar live
+state and the judge verdict colours are reasoned but unseen.
+
+**Still open, and not a palette problem:** the dashboard is mostly empty space
+with a dashed box in it. The empty state should offer the invite link and a
+problem picker, and the room's turn timer / queue / participants are three
+strips where one would do.
+
+---
+
+## Boot-log loader for room creation and room connect
+
+**Date:** 2026-09-09
+
+**Task:** Give room creation a real loading screen instead of a spinner.
+
+**What was there:** two nearly invisible waits. Creating a room showed a 16px
+`Loader2` inside the button; arriving at the room then showed the words
+"Loading room..." centre-screen. Together that's a multi-second gap where the
+app looks like it ignored the click.
+
+**What replaced it:** `components/RoomBootLoader.tsx` — a full-screen mono
+boot log, matching the Terminal Paper direction. A prompt marker per line, the
+active line carrying a blinking block caret in `live` rust, finished lines
+marked `ok` in `success`, and a running elapsed clock in tabular figures.
+
+**The rule it follows: every line is a milestone actually observed.** The
+create flow has two real phases — the POST in flight, then the navigation
+that follows — and the room page has two more, the stream connecting
+(`editor.connected`) and the snapshot arriving. Nothing is on a timer and no
+step is invented. A fake four-step sequence that always takes the same time
+is exactly what makes a loader feel cheap, and it also lies about where the
+time is going.
+
+**Deliberately the same screen in both places**, so going from "New Room"
+straight into the room reads as one continuous wait rather than two unrelated
+loading states.
+
+**No-flash reveal:** the loader is held at `opacity: 0` for 140ms via a
+`loader-in` animation with `both` fill, so a fast creation never flashes a
+full-screen panel for one frame. Same reasoning as `TopProgressBar`'s CSS
+delay, and it's CSS rather than a timer for the same reason.
+
+**Three lint rules shaped this component, worth knowing before editing it:**
+
+- `react-hooks/refs` — can't read a ref during render.
+- `react-hooks/set-state-in-effect` — can't hydrate state from an effect.
+- `react-hooks/purity` — can't call `performance.now()` during render, so the
+  start time is stamped inside the effect, not at `useRef(...)`.
+
+Per-step durations ("creating room … 340ms") were built and then removed:
+holding them in a ref trips the first rule, holding them in state trips the
+second. The total elapsed is honest and enough. Don't re-add them without a
+plan for both rules.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, `next build` succeeds.
+Exercised in a real browser with `/api/rooms` throttled to 7s to hold the
+loader open — the clock counts, the active marker is rust, pending lines stay
+dim. That run also created a real room, which incidentally confirmed the
+room page under Terminal Paper (Monaco correctly on the `vs` light theme) —
+previously listed as unverified.
+
+---
+
+## Monaco was still wearing its stock theme
+
+**Date:** 2026-09-09
+
+**Reported:** "regardless of what mode the monaco editor stays the default
+colour."
+
+**What was actually wrong:** not the light/dark *switch* — that worked. The
+earlier change set `theme` to `"vs"` / `"vs-dark"`, and measuring in the
+browser confirmed the class really did flip live on toggle. The problem was
+that those are Monaco's **stock** palettes and neither matches this app:
+
+| | editor | app canvas |
+|---|---|---|
+| light | `#FFFFFE` | `#FBFBF9` |
+| dark  | `#1E1E1E` (cool grey) | `#141311` (warm) |
+
+So in both modes the editor read as "default Monaco" — and since it's the
+largest surface on the room page, that quietly undid the whole direction.
+Worth remembering as a diagnosis: "doesn't change with the mode" and "changes
+but to the wrong colours" look identical from the outside.
+
+**Fix:** `lib/monacoTheme.ts` defines a real theme, `thirty70`. Rather than
+hard-coding a second copy of the palette — which would drift the first time
+`globals.css` changed — it **derives the theme from the CSS custom properties
+at runtime** via `getComputedStyle`. One source of truth, and it follows any
+future palette edit for free. Only solid hex tokens are usable; the `…-soft`
+/ `…-line` rgba ones are filtered out, with per-token fallbacks for SSR.
+
+Registered in `beforeMount` so the `theme` prop resolves to something Monaco
+already knows, and re-derived in an effect on every switch: `data-theme` is
+already stamped by then, so re-reading the variables picks up the new palette,
+and redefining under the same name is what makes Monaco repaint.
+
+Syntax colours follow the same restraint as the rest of the app — rust
+keywords, green strings, ink greys for everything else, rust caret. No blues,
+no purples.
+
+**Caught by looking at the screenshot afterwards:** bracket-pair colourisation
+ships on by default with a six-hue rainbow, so the braces were rendering blue
+and yellow — the only colour on screen nobody had chosen. Disabled in the
+editor options, and the six `editorBracketHighlight.foreground*` slots are
+themed on-palette in case anyone re-enables it.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, build succeeds. Measured
+in the browser in both modes — editor background now equals the app canvas
+exactly (`rgb(251,251,249)` light, `rgb(20,19,17)` dark) and switches live
+without a reload. Brackets re-checked at zoom after the fix.
+
+---
+
+## The editor wasn't broken — the room had no theme control
+
+**Date:** 2026-09-09
+
+**Reported:** "still white", with a screenshot of a room on the dev server.
+
+**What was actually true:** nothing was broken. Measured on the running dev
+server (`localhost:3000`, the same one in the screenshot):
+
+| mode | editor background | app canvas |
+|---|---|---|
+| light | `rgb(251,251,249)` | `rgb(251,251,249)` |
+| dark  | `rgb(20,19,17)` | `rgb(20,19,17)` |
+
+Exact match in both, switching live without a reload. The stored preference
+was simply `"light"`, so a pale editor was correct behaviour.
+
+**The real defect** was that `ThemeToggle` only existed in the dashboard
+sidebar and the landing nav. The room page had none — so the one screen that
+is almost entirely editor gave you no way to change how it looks. You had to
+leave the room to change the room. Added to `RoomHeader`, beside Invite.
+
+**Worth keeping as a diagnostic habit:** three different faults present as
+"the theme doesn't work" — the switch not firing, the switch firing but
+painting stock colours (the previous entry), and the switch being unreachable
+from the screen you're on (this one). Measuring the actual pixel values told
+these apart immediately, where reading the code did not.
+
+**One false alarm, recorded so it isn't re-investigated:** a scripted click on
+"Dark" appeared to store `"system"`. It was my own automated click racing a
+hot reload of the component I had just added. Clean clicks store correctly —
+`Light` → `"light"`, `Dark` → `"dark"`, one radiogroup, `aria-checked`
+tracking properly.
+
+**Unrelated pre-existing errors:** the console carries two exceptions from
+`monaco/vs/editorWorkerHost-*.js` (the Monaco web worker). They predate the
+theming work and are what the Next devtools "1 Issue" badge is counting. Not
+investigated — noting them so the badge isn't mistaken for a theme fault.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`. Toggle exercised through
+the real control in a live room on the dev server, both directions.
+
+---
+
+## Hairlines were too faint to do their job
+
+**Date:** 2026-09-09
+
+**Reported:** "the border in light mode is non existent."
+
+**Measured before changing anything** (WCAG contrast against the ground):
+
+| token | value | vs canvas | vs surface |
+|---|---|---|---|
+| light `--line` | `#dedcd4` | **1.33:1** | 1.25:1 |
+| light `--line-strong` | `#c9c6bb` | 1.65:1 | 1.55:1 |
+| `bg-elevated` used as a divider | `#edede8` | **1.13:1** | 1.07:1 |
+| dark `--line` | `#2e2d28` | **1.35:1** | 1.25:1 |
+
+So the report was exactly right, and measuring turned up a worse case nobody
+had mentioned: the four vertical dividers in `RoomHeader` were drawn with
+`bg-elevated` — a *surface* token, not a line token — at 1.13:1. That is the
+faintest thing on the screen and effectively invisible. A divider is a line;
+they now use `bg-line`.
+
+**New values:** light `--line` `#cbc8bc` (1.62:1) and `--line-strong`
+`#ada899` (2.29:1); dark `--line` `#38362f` (1.54:1) and `--line-strong`
+`#57544a` (2.45:1).
+
+**Dark was raised too, although only light was reported.** It measured the
+same 1.35:1 weakness, and fixing one theme alone would have left the other
+visibly flatter. Called out rather than done silently, in case that isn't
+wanted.
+
+This matters more in this direction than it would elsewhere: Terminal Paper
+is a grid of hairlines with no cards, shadows or fills doing the work of
+separation. If the rules don't read, the structure doesn't exist.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, build succeeds. Checked in
+the browser in light mode on the dev server — dashboard and room header, the
+latter zoomed to confirm the dividers now read.
+
+---
+
+## Default theme back to "follow the system"
+
+**Date:** 2026-09-09
+
+**Task:** A new user should start on their OS setting, not forced to light.
+
+This reverses the earlier "white by default" decision, which had been made
+after the first white-and-blue pass landed a dark-OS user in navy. With
+Terminal Paper's dark being a warm near-black rather than that navy, following
+the OS is the better default again.
+
+**Dark now has two entry points**, which is what made this more than a
+one-line change:
+
+1. no explicit choice + a dark OS — the new-user path, handled in CSS by
+   `@media (prefers-color-scheme: dark)` on `:root:not([data-theme="light"])`;
+2. chosen outright, or chosen as "system" on a dark machine — stamped as
+   `data-theme="dark"` by the boot script before first paint.
+
+The `:not([data-theme="light"])` guard is what lets someone who deliberately
+picked light stay light on a dark machine.
+
+**The dark palette's values are now declared once**, as `--dark-*` custom
+properties, and both selectors above assign from them. Two selectors each
+restating twenty hexes is precisely the kind of duplication that drifts the
+first time one colour is tweaked.
+
+A missing storage key and an explicit `"system"` are treated as the same
+thing, in both the boot script and `hooks/useTheme.ts` — so "never chose" and
+"chose system" behave identically, and the toggle shows System selected.
+
+**A side effect worth keeping:** because the CSS resolves dark on its own when
+no `data-theme` is stamped, the page is now correct with JavaScript disabled.
+The boot script's `catch` no longer forces light for the same reason.
+
+**Verified** on the dev server, OS set to dark, all four states by reload:
+
+| stored | data-theme | canvas |
+|---|---|---|
+| *(none — new user)* | `dark` | `rgb(20,19,17)` |
+| `"light"` | `light` | `rgb(251,251,249)` |
+| `"system"` | `dark` | `rgb(20,19,17)` |
+| *(attribute stripped — no-JS)* | none | `rgb(20,19,17)` |
+
+Plus clean `tsc --noEmit`, clean `eslint`, successful build.
+
+**Gotcha that cost a build:** the boot script is a template literal, so a
+backtick in one of its comments terminated the string and produced a parse
+error. Don't put backticks inside `THEME_BOOT_SCRIPT`.

@@ -21,12 +21,12 @@ export function InviteLink({ inviteCode }: InviteLinkProps) {
     <button
       onClick={copyLink}
       title={copied ? "Copied!" : "Copy invite link"}
-      className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+      className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted transition-colors hover:bg-elevated hover:text-ink"
     >
       {copied ? (
         <>
-          <Check className="h-3.5 w-3.5 text-emerald-400" />
-          <span className="text-emerald-400">Copied</span>
+          <Check className="h-3.5 w-3.5 text-accent" />
+          <span className="text-accent">Copied</span>
         </>
       ) : (
         <>

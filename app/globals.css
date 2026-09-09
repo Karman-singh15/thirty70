@@ -1,48 +1,296 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------------------
+   Theme tokens — "Terminal Paper"
+
+   Colours are named by role, not by value: `bg-canvas` is the page,
+   `bg-surface` is a panel on it, `text-muted` is secondary copy. Each theme
+   fills in what those roles look like, so no component needs a `dark:`
+   variant — the variable underneath changes.
+
+   The direction: a monospace instrument panel printed on warm paper rather
+   than glowing on a black console. Two rules hold it together.
+
+   1. `accent` is ink, not a colour. Buttons, the logo mark and active states
+      are near-black on paper. Nothing competes for attention by being bright.
+   2. `live` is the one hue in the room, and it is reserved for the thing that
+      is *ticking* — the turn clock, its progress bar, the other player's
+      caret. If rust shows up anywhere that isn't live, it stops meaning
+      anything.
+
+   Status (`success`/`warn`/`danger`) stays separate from both: "Accepted" is
+   a statement about the code, not about the brand.
+   --------------------------------------------------------------------------- */
+
+/* The dark palette's *values*, declared once. Both selectors that switch into
+   dark below assign from these rather than restating hexes — dark now has two
+   entry points (an explicit choice, and following the OS with no choice made),
+   and keeping a third copy of twenty colours in sync by hand is exactly the
+   kind of thing that silently drifts. */
 :root {
-  --background: #09090b;
-  --foreground: #fafafa;
+  --dark-canvas: #141311;
+  --dark-surface: #1c1b18;
+  --dark-elevated: #24231f;
+  --dark-line: #38362f;
+  --dark-line-strong: #57544a;
+  --dark-ink: #edebe3;
+  --dark-ink-soft: #c9c6ba;
+  --dark-muted: #8e8b7f;
+  --dark-faint: #6a6860;
+  --dark-accent: #edebe3;
+  --dark-accent-hover: #ffffff;
+  --dark-accent-soft: rgba(237, 235, 227, 0.1);
+  --dark-accent-line: rgba(237, 235, 227, 0.22);
+  --dark-on-accent: #141311;
+  --dark-live: #d08a3e;
+  --dark-live-soft: rgba(208, 138, 62, 0.14);
+  --dark-live-line: rgba(208, 138, 62, 0.32);
+  --dark-success: #7fb069;
+  --dark-success-soft: rgba(127, 176, 105, 0.14);
+  --dark-success-line: rgba(127, 176, 105, 0.3);
+  --dark-warn: #d08a3e;
+  --dark-warn-soft: rgba(208, 138, 62, 0.14);
+  --dark-warn-line: rgba(208, 138, 62, 0.3);
+  --dark-danger: #e08b7e;
+  --dark-danger-soft: rgba(224, 139, 126, 0.14);
+  --dark-danger-line: rgba(224, 139, 126, 0.3);
+  --dark-inverse: #edebe3;
+  --dark-inverse-hover: #ffffff;
+  --dark-on-inverse: #141311;
+}
+
+/* Light is the *fallback* palette, not the default preference: a viewer who
+   has made no choice follows their OS (see the two dark selectors below), and
+   these values are what applies when that OS is light. */
+:root {
+  /* Grounds — warm paper, not white. */
+  --canvas: #fbfbf9;
+  --surface: #f4f4f1;
+  --elevated: #edede8;
+
+  /* Measured, not guessed: the old #dedcd4 sat at 1.33:1 against the paper,
+     which on a bright screen reads as no border at all. This design is a grid
+     of hairlines, so they have to be legible or the structure disappears.
+     1.62:1 is present without turning into heavy rules. */
+  --line: #cbc8bc;
+  --line-strong: #ada899;
+
+  --ink: #1b1b19;
+  --ink-soft: #45453f;
+  --muted: #83837a;
+  --faint: #a5a599;
+
+  /* Ink is the accent. */
+  --accent: #1b1b19;
+  --accent-hover: #38382f;
+  --accent-soft: rgba(27, 27, 25, 0.06);
+  --accent-line: rgba(27, 27, 25, 0.18);
+  --on-accent: #fbfbf9;
+
+  /* The only hue. Reserved for what is ticking. */
+  --live: #8a4b12;
+  --live-soft: rgba(138, 75, 18, 0.09);
+  --live-line: rgba(138, 75, 18, 0.28);
+
+  --success: #2f6a2f;
+  --success-soft: rgba(47, 106, 47, 0.1);
+  --success-line: rgba(47, 106, 47, 0.25);
+  --warn: #8a4b12;
+  --warn-soft: rgba(138, 75, 18, 0.1);
+  --warn-line: rgba(138, 75, 18, 0.25);
+  --danger: #9e2b2b;
+  --danger-soft: rgba(158, 43, 43, 0.08);
+  --danger-line: rgba(158, 43, 43, 0.25);
+
+  /* The high-contrast button. Flips with the theme, so it can't be fixed. */
+  --inverse: #1b1b19;
+  --inverse-hover: #38382f;
+  --on-inverse: #fbfbf9;
+
+  color-scheme: light;
+}
+
+/* Dark, entry point 1: no explicit choice, OS is dark. This is what a brand
+   new viewer gets. Guarded on :not([data-theme="light"]) so that someone who
+   has deliberately chosen light still gets light on a dark machine. It also
+   means the page is correct with JavaScript disabled, when nothing stamps
+   data-theme at all. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: var(--dark-canvas);
+    --surface: var(--dark-surface);
+    --elevated: var(--dark-elevated);
+    --line: var(--dark-line);
+    --line-strong: var(--dark-line-strong);
+    --ink: var(--dark-ink);
+    --ink-soft: var(--dark-ink-soft);
+    --muted: var(--dark-muted);
+    --faint: var(--dark-faint);
+    --accent: var(--dark-accent);
+    --accent-hover: var(--dark-accent-hover);
+    --accent-soft: var(--dark-accent-soft);
+    --accent-line: var(--dark-accent-line);
+    --on-accent: var(--dark-on-accent);
+    --live: var(--dark-live);
+    --live-soft: var(--dark-live-soft);
+    --live-line: var(--dark-live-line);
+    --success: var(--dark-success);
+    --success-soft: var(--dark-success-soft);
+    --success-line: var(--dark-success-line);
+    --warn: var(--dark-warn);
+    --warn-soft: var(--dark-warn-soft);
+    --warn-line: var(--dark-warn-line);
+    --danger: var(--dark-danger);
+    --danger-soft: var(--dark-danger-soft);
+    --danger-line: var(--dark-danger-line);
+    --inverse: var(--dark-inverse);
+    --inverse-hover: var(--dark-inverse-hover);
+    --on-inverse: var(--dark-on-inverse);
+
+    color-scheme: dark;
+  }
+}
+
+/* Dark, entry point 2: chosen outright, or chosen as "system" on a dark
+   machine. The boot script in app/layout.tsx resolves both to this attribute
+   before first paint, so it beats the media query above in either direction. */
+:root[data-theme="dark"] {
+  --canvas: var(--dark-canvas);
+  --surface: var(--dark-surface);
+  --elevated: var(--dark-elevated);
+  --line: var(--dark-line);
+  --line-strong: var(--dark-line-strong);
+  --ink: var(--dark-ink);
+  --ink-soft: var(--dark-ink-soft);
+  --muted: var(--dark-muted);
+  --faint: var(--dark-faint);
+  --accent: var(--dark-accent);
+  --accent-hover: var(--dark-accent-hover);
+  --accent-soft: var(--dark-accent-soft);
+  --accent-line: var(--dark-accent-line);
+  --on-accent: var(--dark-on-accent);
+  --live: var(--dark-live);
+  --live-soft: var(--dark-live-soft);
+  --live-line: var(--dark-live-line);
+  --success: var(--dark-success);
+  --success-soft: var(--dark-success-soft);
+  --success-line: var(--dark-success-line);
+  --warn: var(--dark-warn);
+  --warn-soft: var(--dark-warn-soft);
+  --warn-line: var(--dark-warn-line);
+  --danger: var(--dark-danger);
+  --danger-soft: var(--dark-danger-soft);
+  --danger-line: var(--dark-danger-line);
+  --inverse: var(--dark-inverse);
+  --inverse-hover: var(--dark-inverse-hover);
+  --on-inverse: var(--dark-on-inverse);
+
+  color-scheme: dark;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
+  --color-on-accent: var(--on-accent);
+
+  --color-live: var(--live);
+  --color-live-soft: var(--live-soft);
+  --color-live-line: var(--live-line);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-line: var(--success-line);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-line);
+
+  --color-inverse: var(--inverse);
+  --color-inverse-hover: var(--inverse-hover);
+  --color-on-inverse: var(--on-inverse);
+
+  --font-sans: var(--font-instrument-sans);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+/* Corners are 2px everywhere. Overriding the scale once here is what keeps the
+   direction consistent — otherwise every `rounded-xl` already written across
+   30-odd components would have to be hunted down by hand. */
+@theme {
+  --radius-xs: 2px;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --radius-xl: 2px;
+  --radius-2xl: 3px;
+  --radius-3xl: 3px;
+  --radius-4xl: 4px;
 }
 
 html {
   scroll-behavior: smooth;
 }
 
+/* Mono is the interface font, not just the code font — that is the direction.
+   Ligatures are off here because JetBrains Mono resolves `->` and `!=` into
+   single glyphs that read as typos in UI labels; prose and code turn them
+   back on. */
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans), system-ui, sans-serif;
-  font-feature-settings: "cv11", "ss01";
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-ligatures: none;
   font-variant-numeric: tabular-nums;
 }
 
 ::selection {
-  background: rgba(52, 211, 153, 0.25);
-  color: #fafafa;
+  background: var(--live-soft);
+  color: var(--ink);
 }
 
 :focus-visible {
-  outline: 2px solid #34d399;
+  outline: 2px solid var(--live);
   outline-offset: 2px;
 }
 
-/* Fixed, pointer-events-none grain layer used behind marketing surfaces to
-   break flat digital color — kept as a data-uri so it needs no asset file. */
+/* Fixed, pointer-events-none grain layer behind marketing surfaces. On paper
+   it does real work — `multiply` at low opacity reads as tooth in the stock
+   rather than as dirt. */
 .grain-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  opacity: 0.035;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .grain-overlay {
+    opacity: 0.05;
+    mix-blend-mode: overlay;
+  }
+}
+
+:root[data-theme="dark"] .grain-overlay {
   opacity: 0.05;
   mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 @keyframes fade-in-up {
@@ -71,24 +319,79 @@ body {
   }
 }
 
-/* The other player's cursor in the shared editor. The caret decoration sits
-   on a zero-width range, so it only shows up at all because of the border. */
+/* Block caret for the boot loader's active line. steps(1) so it snaps rather
+   than fades — a terminal cursor doesn't ease. The global reduced-motion rule
+   clamps animation-duration, but setting animation-name to none here is what
+   actually stops it. */
+@keyframes caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.caret-blink {
+  animation: caret-blink 1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret-blink {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* Held invisible for 140ms before fading in. Most room creations finish
+   faster than that, and a full-screen loader that flashes for one frame is
+   worse than no loader — `both` keeps the from-state during the delay. */
+@keyframes loader-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.loader-in {
+  animation: loader-in 180ms ease-out 140ms both;
+}
+
+/* The other player's cursor in the shared editor. The caret decoration sits on
+   a zero-width range, so it only shows up at all because of the border. Rust
+   rather than ink: someone else typing is the definition of live. */
 .collab-caret {
-  border-left: 2px solid #34d399;
+  border-left: 2px solid var(--live);
   margin-left: -1px;
   position: relative;
   z-index: 2;
 }
 
 .collab-caret-line {
-  background: rgba(52, 211, 153, 0.07);
+  background: var(--live-soft);
 }
 
 /* LeetCode problem content styling */
+
+/* The one place the mono is dropped. A problem statement is a paragraph
+   somebody actually has to read, and monospace running text is tiring at
+   length — labels and data keep the mono, prose gets the sans. */
+.prose {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-variant-numeric: normal;
+  font-variant-ligatures: normal;
+}
+
 .prose pre {
-  border-radius: 0.5rem;
+  border-radius: 2px;
   padding: 0.75rem 1rem;
   overflow-x: auto;
+  background: var(--elevated);
+  color: var(--ink-soft);
 }
 
 .prose code {
@@ -97,9 +400,34 @@ body {
 }
 
 .prose strong {
-  color: #fafafa;
+  color: var(--ink);
 }
 
 .prose sup {
   font-size: 0.75em;
+}
+
+/* Motion is a real accessibility setting, and vestibular triggers are exactly
+   the kind of thing a shared, timed, live-updating room page shouldn't ignore.
+   One global override so it can't be forgotten the next time something
+   animated is added. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}
+
+/* Body copy only — headings set their own balance where they need it. */
+p {
+  text-wrap: pretty;
 }

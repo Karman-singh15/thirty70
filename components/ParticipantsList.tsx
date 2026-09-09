@@ -31,8 +31,8 @@ export function ParticipantsList({
           return (
             <div key={p.userId} className="relative" title={p.name}>
               <div
-                className={`flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-zinc-800 text-xs font-medium text-zinc-200 ring-2 ring-zinc-950 ${
-                  hasCameraOn ? "outline outline-2 outline-emerald-500" : ""
+                className={`flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-elevated text-xs font-medium text-ink ring-2 ring-canvas ${
+                  hasCameraOn ? "outline outline-2 outline-accent" : ""
                 }`}
               >
                 {p.imageUrl ? (
@@ -44,21 +44,21 @@ export function ParticipantsList({
               </div>
 
               <span
-                className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-zinc-950 ${
-                  isOnline ? "bg-emerald-400" : "bg-zinc-600"
+                className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-canvas ${
+                  isOnline ? "bg-accent" : "bg-faint"
                 }`}
               />
 
               {hasMicOn && (
-                <span className="absolute -bottom-0.5 -left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 ring-2 ring-zinc-950">
-                  <Mic className="h-2 w-2 text-zinc-950" strokeWidth={3} />
+                <span className="absolute -bottom-0.5 -left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-accent ring-2 ring-canvas">
+                  <Mic className="h-2 w-2 text-on-accent" strokeWidth={3} />
                 </span>
               )}
             </div>
           );
         })}
       </div>
-      <span className="text-xs text-zinc-500" title={`${onlineCount} online now`}>
+      <span className="text-xs text-muted" title={`${onlineCount} online now`}>
         {participants.length}/{maxParticipants} in room
       </span>
     </div>

@@ -94,7 +94,7 @@ export function TurnBar({
 
   if (!hasProblem) {
     return (
-      <div className="flex items-center border-b border-zinc-800 bg-zinc-900/40 px-4 py-2 text-xs text-zinc-500">
+      <div className="flex items-center border-b border-line bg-surface px-4 py-2 text-xs text-muted">
         {isOwner
           ? "Pick a problem below to start the first turn."
           : "Waiting for the host to pick a problem."}
@@ -115,33 +115,33 @@ export function TurnBar({
       // banner that shouts over the problem itself.
       className={`flex items-center justify-between gap-4 border-b border-l-2 px-4 py-2 transition-colors ${
         isMyTurn
-          ? "border-b-emerald-500/25 border-l-emerald-500 bg-emerald-500/[0.07]"
-          : "border-b-zinc-800 border-l-transparent bg-zinc-900/40"
+          ? "border-b-live-line border-l-live bg-live-soft"
+          : "border-b-line border-l-transparent bg-surface"
       }`}
     >
       <div className="flex min-w-0 items-center gap-3">
         <span className="flex shrink-0 items-center gap-1.5 text-xs">
           {isMyTurn && (
             <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-live opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-live" />
             </span>
           )}
-          <span className={isMyTurn ? "font-semibold text-emerald-300" : "font-medium text-zinc-300"}>
+          <span className={isMyTurn ? "font-semibold text-live" : "font-medium text-ink-soft"}>
             {isMyTurn ? "Your turn" : currentPlayer ? `${currentPlayer.name}'s turn` : "Waiting"}
           </span>
-          <span className="text-zinc-600">·</span>
-          <span className="text-zinc-500">turn {turnNumber}</span>
+          <span className="text-faint">·</span>
+          <span className="text-muted">turn {turnNumber}</span>
         </span>
 
         {remainingMs !== null && (
           <span
             className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-xs tabular-nums ${
               isPaused
-                ? "bg-amber-500/15 text-amber-400"
+                ? "bg-warn-soft text-warn"
                 : low
-                  ? "bg-red-500/15 text-red-400"
-                  : "bg-zinc-800 text-zinc-400"
+                  ? "bg-danger-soft text-danger"
+                  : "bg-elevated text-muted"
             }`}
           >
             {isPaused ? "Paused · " : ""}
@@ -149,7 +149,7 @@ export function TurnBar({
           </span>
         )}
 
-        <div className="hidden h-4 w-px shrink-0 bg-zinc-800 md:block" />
+        <div className="hidden h-4 w-px shrink-0 bg-elevated md:block" />
 
         <div className="hidden min-w-0 items-center gap-2 md:flex">
           <TurnQueue
@@ -161,7 +161,7 @@ export function TurnBar({
           {/* Passing with a one-person rotation cycles straight back to you,
               which otherwise reads as the pass button being broken. */}
           {turnOrder.length === 1 && (
-            <span className="hidden shrink-0 whitespace-nowrap text-[11px] text-zinc-500 lg:inline">
+            <span className="hidden shrink-0 whitespace-nowrap text-[11px] text-muted lg:inline">
               only you in the rotation
             </span>
           )}
@@ -170,9 +170,9 @@ export function TurnBar({
 
       <div className="flex items-center gap-3">
         {isOwner && customInput === null && (
-          <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+          <label className="flex items-center gap-1.5 text-xs text-muted">
             Turn length
-            {durationPending && <Spinner className="h-3 w-3 text-zinc-400" />}
+            {durationPending && <Spinner className="h-3 w-3 text-muted" />}
             <select
               disabled={durationPending}
               value={
@@ -185,7 +185,7 @@ export function TurnBar({
                   onChangeDuration(Number(e.target.value));
                 }
               }}
-              className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300 focus:outline-none disabled:opacity-50"
+              className="rounded border border-line-strong bg-elevated px-1.5 py-0.5 text-xs text-ink-soft focus:outline-none disabled:opacity-50"
             >
               {DURATION_STEPS.map((s) => (
                 <option key={s} value={s}>
@@ -211,7 +211,7 @@ export function TurnBar({
               }
               setCustomInput(null);
             }}
-            className="flex items-center gap-1 text-xs text-zinc-500"
+            className="flex items-center gap-1 text-xs text-muted"
           >
             <input
               autoFocus
@@ -221,7 +221,7 @@ export function TurnBar({
               value={customInput}
               onChange={(e) => setCustomInput(e.target.value)}
               onBlur={() => setCustomInput(null)}
-              className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-zinc-200 focus:outline-none"
+              className="w-16 rounded border border-line-strong bg-elevated px-1.5 py-0.5 text-ink focus:outline-none"
             />
             <span>sec</span>
           </form>
@@ -233,8 +233,8 @@ export function TurnBar({
             disabled={pausePending}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:opacity-60 ${
               isPaused
-                ? "bg-amber-500/15 text-amber-400 hover:bg-amber-500/25"
-                : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                ? "bg-warn-soft text-warn hover:bg-warn-soft"
+                : "bg-elevated text-ink-soft hover:bg-line-strong"
             }`}
           >
             {isPaused ? "Resume" : "Pause"}
@@ -252,7 +252,7 @@ export function TurnBar({
           <button
             onClick={onPass}
             disabled={passPending}
-            className="flex shrink-0 items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white shadow-sm shadow-emerald-900/40 hover:bg-emerald-500 disabled:cursor-wait disabled:bg-emerald-600/70"
+            className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent-hover px-3 py-1 text-xs font-medium text-on-accent shadow-sm shadow-accent-soft hover:bg-accent disabled:cursor-wait disabled:bg-accent-hover"
           >
             {passPending ? "Passing…" : "Pass turn"}
             {passPending ? <Spinner /> : <SkipForward className="h-3 w-3" />}

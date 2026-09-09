@@ -15,7 +15,7 @@ export function TopProgressBar({ active }: { active: boolean }) {
       role="progressbar"
       aria-hidden={!active}
     >
-      <div className="absolute inset-y-0 w-1/3 animate-[indeterminate_1.1s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-transparent via-emerald-400 to-transparent" />
+      <div className="absolute inset-y-0 w-1/3 animate-[indeterminate_1.1s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-transparent via-accent to-transparent" />
     </div>
   );
 }

@@ -20,9 +20,9 @@ interface CurrentRoom {
 }
 
 const difficultyColor: Record<string, string> = {
-  Easy: "text-emerald-400",
-  Medium: "text-amber-400",
-  Hard: "text-red-400",
+  Easy: "text-success",
+  Medium: "text-warn",
+  Hard: "text-danger",
 };
 
 export default function DashboardPage() {
@@ -49,10 +49,10 @@ export default function DashboardPage() {
     <div className="mx-auto max-w-4xl px-8 py-10">
       <div className="mb-9 flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
+          <h1 className="text-2xl font-semibold tracking-tight text-ink">
             Your room
           </h1>
-          <p className="mt-1.5 text-sm text-zinc-500">
+          <p className="mt-1.5 text-sm text-muted">
             Start a room, invite a friend, and pick a problem to work through
             together. You&apos;re in one room at a time — starting or joining
             another leaves the one you&apos;re in.
@@ -67,14 +67,14 @@ export default function DashboardPage() {
       </div>
 
       {loading ? (
-        <div className="h-[68px] animate-pulse rounded-xl border border-zinc-900 bg-zinc-900/40" />
+        <div className="h-[68px] animate-pulse rounded-xl border border-line bg-surface" />
       ) : !room ? (
-        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-zinc-800 py-20 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-zinc-900">
-            <Code2 className="h-5 w-5 text-zinc-600" />
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-line py-20 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-surface">
+            <Code2 className="h-5 w-5 text-faint" />
           </div>
-          <p className="text-sm font-medium text-zinc-300">You&apos;re not in a room</p>
-          <p className="max-w-xs text-sm text-zinc-500">
+          <p className="text-sm font-medium text-ink-soft">You&apos;re not in a room</p>
+          <p className="max-w-xs text-sm text-muted">
             Start one above and share the invite link with whoever you&apos;re
             practicing with.
           </p>
@@ -82,11 +82,11 @@ export default function DashboardPage() {
       ) : (
         <Link
           href={`/room/${room.id}`}
-          className="group flex items-center justify-between rounded-xl border border-zinc-900 bg-zinc-900/40 px-5 py-4 transition hover:border-zinc-800 hover:bg-zinc-900"
+          className="group flex items-center justify-between rounded-xl border border-line bg-surface px-5 py-4 transition hover:border-line hover:bg-surface"
         >
           <div className="min-w-0">
-            <h3 className="truncate font-medium text-zinc-100">{room.name}</h3>
-            <p className="mt-0.5 truncate text-xs text-zinc-500">
+            <h3 className="truncate font-medium text-ink">{room.name}</h3>
+            <p className="mt-0.5 truncate text-xs text-muted">
               by {room.ownerName}
               {room.problem && (
                 <>
@@ -98,7 +98,7 @@ export default function DashboardPage() {
               )}
             </p>
           </div>
-          <div className="ml-4 flex shrink-0 items-center gap-1 text-xs text-zinc-500 transition group-hover:text-zinc-300">
+          <div className="ml-4 flex shrink-0 items-center gap-1 text-xs text-muted transition group-hover:text-ink-soft">
             <Users className="h-3.5 w-3.5" />
             {room.participantCount}
           </div>

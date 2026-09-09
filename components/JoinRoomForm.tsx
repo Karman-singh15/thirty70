@@ -44,12 +44,12 @@ export function JoinRoomForm() {
           value={code}
           onChange={(e) => setCode(e.target.value)}
           placeholder="Paste invite code..."
-          className="flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none"
+          className="flex-1 rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
         />
         <button
           type="submit"
           disabled={loading || !code.trim()}
-          className="flex items-center gap-1 rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+          className="flex items-center gap-1 rounded-lg border border-line-strong px-4 py-2 text-sm text-ink hover:bg-elevated disabled:opacity-50"
         >
           {loading ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -59,7 +59,7 @@ export function JoinRoomForm() {
           Join
         </button>
       </div>
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && <p className="text-xs text-danger">{error}</p>}
     </form>
   );
 }

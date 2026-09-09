@@ -98,7 +98,7 @@ export function VideoTile({
   const showVideo = cameraOn && !!stream;
 
   const avatar = (
-    <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-zinc-800 text-sm font-medium text-zinc-200">
+    <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-elevated text-sm font-medium text-ink">
       {imageUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={imageUrl} alt={name} className="h-full w-full object-cover" />
@@ -110,8 +110,8 @@ export function VideoTile({
 
   return (
     <div
-      className={`relative flex aspect-video w-full shrink-0 items-center justify-center overflow-hidden rounded-lg bg-zinc-900 ring-1 ${
-        isOnline ? "ring-zinc-800" : "ring-zinc-800/50"
+      className={`relative flex aspect-video w-full shrink-0 items-center justify-center overflow-hidden rounded-lg bg-surface ring-1 ${
+        isOnline ? "ring-line" : "ring-line"
       }`}
     >
       {/* Carries the picture only, and is muted for good: a peer's sound
@@ -135,8 +135,8 @@ export function VideoTile({
       {!showVideo && avatar}
 
       {!isOnline && (
-        <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/60">
-          <span className="text-[10px] font-medium text-zinc-400">Offline</span>
+        <div className="absolute inset-0 flex items-center justify-center bg-canvas/60">
+          <span className="text-[10px] font-medium text-muted">Offline</span>
         </div>
       )}
 
@@ -147,8 +147,8 @@ export function VideoTile({
         <span
           className={`absolute left-1.5 top-1.5 rounded px-1.5 py-0.5 text-[10px] font-medium ${
             connectionState === "failed"
-              ? "bg-red-500/20 text-red-300"
-              : "bg-zinc-800/90 text-zinc-400"
+              ? "bg-danger-soft text-danger"
+              : "bg-elevated text-muted"
           }`}
         >
           {connectionState === "failed" ? "Can't connect" : "Connecting…"}
@@ -159,21 +159,21 @@ export function VideoTile({
         <button
           onClick={enableAudio}
           title="Your browser blocked autoplay — click to hear this person"
-          className="absolute right-1.5 top-1.5 flex items-center gap-1 rounded-md bg-amber-500/90 px-1.5 py-1 text-[10px] font-medium text-zinc-950 hover:bg-amber-400"
+          className="absolute right-1.5 top-1.5 flex items-center gap-1 rounded-md bg-warn px-1.5 py-1 text-[10px] font-medium text-on-accent hover:bg-warn"
         >
           <Volume2 className="h-3 w-3" />
           Unmute
         </button>
       )}
 
-      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-gradient-to-t from-zinc-950/80 to-transparent px-2 py-1.5">
-        <span className="truncate text-xs font-medium text-zinc-100">
+      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-gradient-to-t from-canvas/80 to-transparent px-2 py-1.5">
+        <span className="truncate text-xs font-medium text-ink">
           {name}
           {isSelf ? " (you)" : ""}
         </span>
         <span
           className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${
-            micOn ? "bg-emerald-500/20 text-emerald-400" : "bg-zinc-800 text-zinc-500"
+            micOn ? "bg-accent-soft text-accent" : "bg-elevated text-muted"
           }`}
         >
           {micOn ? <Mic className="h-3 w-3" /> : <MicOff className="h-3 w-3" />}
