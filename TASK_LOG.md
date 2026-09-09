@@ -1966,3 +1966,196 @@ subscriber); Pro's 8-person cap on full-mesh WebRTC with no TURN; unvalidated
 write-only `sessions`/`turns` tables and the never-read `rooms.status`
 column; the dashboard's room *list* under a one-room-per-user invariant; and
 a README that still describes an in-memory store with 1.5s polling.
+
+---
+
+## Fixed the audit findings: turn clock, judge validation, SSE limits, history
+
+**Date:** 2026-09-09
+
+**Task:** Work through the issues found in the repo audit above.
+
+**P0 — things that were actively failing:**
+
+- `app/api/rooms/[id]/stream/route.ts` — added `maxDuration = 60`. An SSE
+  stream is a function that never returns, so Vercel was cutting it at the
+  Hobby default with no acknowledgement anywhere that this happens; now it's
+  deliberate and documented, and `PRESENCE_WINDOW_MS` (50s) already rides out
+  the reconnect gap. Also halved the per-connect cost: the route built a full
+  room snapshot for the connecting client and then `broadcastRoomUpdate`
+  built a *second* one to announce them. Since `touchPresence` already ran,
+  the first snapshot is correct for both — one `getRoom` per connection
+  instead of two, on a path that now runs every 60s per tab.
+- `app/api/rooms/[id]/judge/route.ts` — the payload is validated field by
+  field and rebuilt, rather than the envelope being checked and the rest
+  cast. Previously `judge.result` was unvalidated and published straight to
+  every other client, where `JudgePanel` renders it: a member could send
+  `cases: "x"` and take down everyone else's room page with a render-time
+  `.map is not a function`. Strings and array lengths are capped, since this
+  is a broadcast path. `userId` now comes from the session rather than the
+  body, so the actor can't be spoofed either.
+- Turn expiry is now enforced, not advisory. `roomState.isTurnExpired` is a
+  pure check on state the hot paths already read, so `/editor` and `/judge`
+  reject writes past the deadline for free — before this, whoever held the
+  turn when it expired kept typing until an unrelated read noticed.
+- New `POST /api/rooms/[id]/turn/expire` plus an effect in `TurnBar`: with
+  polling gone, nothing server-side watched the clock, so the rotation only
+  moved on the 20s SSE heartbeat and a turn could sit visibly at 0:00 for
+  most of that. Every client already counts the same deadline down, so the
+  first to reach zero says so. Safe to be hit by everyone at once —
+  `settleExpiredTurn` claims the turn number atomically — and safe to be hit
+  early or by a skewed clock, since the server re-checks the deadline itself.
+
+**P1 — correctness:**
+
+- `getRoom` now rebuilds an empty `turnOrder` from the participant list when
+  the room has a problem loaded. Two ways in: the Redis key expiring or being
+  evicted, and the last queued player leaving a room that still holds an
+  offline participant (`leaveRoom` empties the queue and `addToTurnOrder`
+  won't reopen an empty one). Either left the room permanently stuck —
+  `advanceTurn` can only answer null, so the timer never fires and Pass does
+  nothing, with no recovery short of picking a new problem. Also starts a
+  turn if nobody holds one, so a rebuilt rotation doesn't look like the stall
+  it just recovered from.
+- `POST /api/rooms/join` returned `{ room: null }` with a 200 when the room
+  vanished mid-join; the client reads `room.id` off it and throws. Now a 404.
+- The empty-room sweep is extracted to `sweepIfAbandoned` and backed by
+  `/api/cron/sweep-rooms` (daily, `vercel.json`, `CRON_SECRET`-gated,
+  exempted from Clerk in `proxy.ts`). The read-path sweep stays — it's what
+  makes the five-minute grace window feel like five minutes — but it was the
+  *only* sweep, so a room whose members never came back was never read again
+  and its Postgres rows sat there forever.
+
+**P2 — history tables, now actually usable:**
+
+- `LiveRoomState` gains `turnJudgeOutcome`. A turn's result is only known when
+  the turn *ends*, but a failed submit doesn't end anything, so the verdict
+  has to be remembered across the rest of the turn.
+- `recordSubmission` (called from the judge route, the only place a real
+  LeetCode verdict reaches the server) marks the session `completed` with
+  `finalCode`/`finalLanguage` on an accepted submit, guarded on
+  `status = 'in_progress'` so the first solve is the one that closes it and
+  so it can't race `persistSessionChange`'s abandon.
+- `finalTurnResult` writes `solved`/`failed` instead of a flat `passed_turn`.
+  Between them, `sessions.status`, `finalCode`, `finalLanguage` and the
+  `solved`/`failed` enum members all mean something now; before this they
+  were schema nothing ever wrote.
+- Dropped `rooms.status` — written once per problem pick, read nowhere, and
+  redundant now the session status is real. Migration generated
+  (`drizzle/0003_fresh_zarek.sql`) and **since applied** — the `status`
+  column and the `room_status` type are both gone from the database, and
+  `drizzle.__drizzle_migrations` records four migrations. (This entry
+  originally said "not applied"; corrected 2026-09-09 after checking the
+  live schema.)
+
+**P3 — cleanup:**
+
+- Dashboard rewritten around one room instead of a list. `leaveOtherRooms`
+  has always enforced one active membership per user, so the grid could only
+  ever hold one card while implying you could keep several going.
+  `getRoomsForUser` → `getCurrentRoomForUser` (`limit(1)`), `GET /api/rooms`
+  returns `{ room }` not `{ rooms }`, sidebar label singular.
+- `nextInQueue` and `pickNextTurnHolder` were the same walk with different
+  eligibility; both now sit on `nextInRotation`.
+- One `ParticipantDisplay` type replaces five copies of
+  `{userId, name, imageUrl}`; `ProblemPanel`/`ProblemSearch`/the room page
+  use `LeetCodeProblemDetail`/`LeetCodeProblemSummary` instead of
+  hand-copying them; `RoomData` is now `RoomSnapshot & {id, name,
+  inviteCode}` rather than a restatement.
+- README rewritten — it still described an in-memory store reset on restart
+  and 1.5s polling, and pointed at a `.env.local.example` that doesn't exist.
+- **`eslint` is clean for the first time** (was 3
+  `react-hooks/set-state-in-effect` errors). `useBillingPlan` and the room
+  page now split reading from writing — `readStatus`/`readRoom` return the
+  data and the effect decides whether it still wants it — and the room page
+  derives `shownProblem` instead of nulling `problemDetail` via setState.
+
+**Verified:** clean `tsc --noEmit`, clean `eslint`, `next build` succeeds.
+Not exercised in a live room — that needs two signed-in accounts, and the
+turn-expiry and judge-validation paths in particular are worth a manual pass.
+
+**Note:** `.next/` had accumulated iCloud conflict copies (`routes.d 2.ts`
+and friends) which `tsc` picks up via the `.next/types/**/*.ts` include and
+fails on. Deleted; they come back on any sync, so `find .next -name "* [0-9].*"
+-delete` is the fix if `tsc` starts reporting duplicate-identifier errors in
+`.next`.
+
+---
+
+## Deferred: one Redis subscriber per room instead of per tab
+
+**Date raised:** 2026-09-09
+**Status:** not started
+
+`subscribeRoomChannels` opens a Redis connection per browser tab, and with
+the SSE stream cut every 60s on Hobby, each tab opens a fresh one that often.
+A four-person room is four connections churning every minute; Upstash bills
+and caps on concurrent connections, so this is the ceiling this design hits
+first.
+
+The fix is one subscriber per room per server instance, fanning out in-process
+to every connected tab, with refcounted teardown when the last tab for a room
+disconnects. Deliberately deferred: it's a real refactor with more failure
+modes (a leaked subscriber, a room whose last listener leaves mid-publish),
+and the `maxDuration` fix plus halving the per-connect work bought enough
+headroom to do it properly rather than under pressure.
+
+---
+
+## Deferred: TURN server, and what Pro actually sells
+
+**Date raised:** 2026-09-09
+**Status:** not started
+
+Rooms are full-mesh WebRTC with STUN only. Two consequences, both currently
+shipped:
+
+1. Anyone behind symmetric NAT or a restrictive corporate network can't
+   connect at all. `VideoTile` says "Can't connect" rather than showing a
+   blank tile, which is honest but isn't a fix.
+2. `MAX_ROOM_PARTICIPANTS_PRO = 8` means 28 peer connections and 7 outbound
+   video streams per person. That will not hold up on a home connection, so
+   Pro currently advertises a capacity the transport can't deliver.
+
+The plan is to put a TURN relay behind the Pro subscription — which fixes (1)
+outright and makes (2) a bandwidth question rather than a connectivity one.
+Past roughly 5 people it still wants an SFU, so the 8-person cap should be
+revisited alongside that, not before it. Left at 8 for now, deliberately.
+
+---
+
+## Finished the cron setup: generated `CRON_SECRET`, verified all three paths
+
+**Date:** 2026-09-09
+
+**Task:** "Set up cron." The sweep itself was already written in the audit-fix
+round — `/api/cron/sweep-rooms`, the daily schedule in `vercel.json`, the
+Clerk exemption in `proxy.ts`, the README row. What was missing was the one
+thing none of that can supply: an actual `CRON_SECRET` value. Without it the
+route answers 503 by design, so as shipped the cron would have run once a day
+and done nothing.
+
+**What was done:**
+
+- Generated a 32-byte hex secret and appended `CRON_SECRET` to `.env.local`
+  (gitignored), with a comment noting it has to match the value on the Vercel
+  project or the cron gets a 401.
+- Exercised the route against a local dev server, all three branches:
+  unauthenticated → 401 from the *route* rather than a Clerk redirect (which
+  is what confirms the `proxy.ts` public-route exemption actually works),
+  wrong bearer → 401, correct bearer → 200 `{"scanned":0,"disbanded":0}`.
+  Not a 503, which is what confirms the secret is being read.
+- Checked the `rooms` table first (empty), so the authorized run had nothing
+  to delete — worth doing before firing a room-deleting endpoint by hand.
+
+**Still needs doing by a human:** the same `CRON_SECRET` has to be set on the
+Vercel project (Settings → Environment Variables) and the app redeployed.
+Vercel only injects the bearer token into cron invocations for deployments
+that have it set; until then production returns 503 and the sweep is inert.
+`vercel.json` is also still untracked, and Vercel only registers the schedule
+once it's committed and deployed.
+
+**Note:** `npx tsc --noEmit` reports four pre-existing errors, all in
+duplicated generated files under `.next/types/` (`cache-life.d 2.ts`,
+`routes.d 3.ts` — file-sync artifacts, not source). Nothing in `app/` or
+`lib/`. Worth deleting `.next/` at some point so the typecheck is clean.

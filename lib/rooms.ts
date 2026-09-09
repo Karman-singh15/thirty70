@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { nanoid } from "nanoid";
 import { after } from "next/server";
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { problems, roomParticipants, rooms, sessions, turns, users } from "@/lib/db/schema";
 import * as roomState from "@/lib/roomState";
@@ -212,6 +212,67 @@ export async function getRoomMeta(
   return meta;
 }
 
+// Disbands a room that nobody has been connected to for the full grace
+// window, and returns whether it is now gone. Tracking *how long* it's been
+// empty rather than acting on this one instant is what keeps a refresh, a
+// laptop sleeping or a brief wifi drop from costing someone their room.
+//
+// Deliberately still called from the read path (getRoom), which means an
+// ordinary read can delete a room — not something a read should normally do.
+// It stays because it's what makes the grace window feel like five minutes:
+// the moment anyone looks at an abandoned room it's gone. The daily cron in
+// /api/cron/sweep-rooms is the backstop underneath it, for the rooms nobody
+// ever looks at again — without which they sit in Postgres forever, since
+// only the Redis side of a room expires on its own.
+export async function sweepIfAbandoned(
+  roomId: string,
+  onlineUserIds: string[]
+): Promise<boolean> {
+  if (onlineUserIds.length > 0) {
+    await roomState.clearRoomEmptySince(roomId);
+    return false;
+  }
+
+  const emptySince = await roomState.markRoomEmptySince(roomId);
+  if (Date.now() - emptySince < EMPTY_ROOM_GRACE_MS) return false;
+
+  await deleteRoom(roomId);
+  return true;
+}
+
+// Rotates a turn whose clock has run out. The claim is what makes this safe
+// to call from anywhere, and from several callers at once: exactly one wins
+// the turn number and rotates, every other call is a no-op. Returns whether
+// this caller is the one that actually settled it, so only that caller
+// announces the change.
+async function claimAndEndExpiredTurn(
+  roomId: string,
+  live: roomState.LiveRoomState,
+  meta?: roomState.CachedRoomMeta
+): Promise<boolean> {
+  if (!roomState.isTurnExpired(live)) return false;
+  if (!(await roomState.tryClaimTurnTimeout(roomId, live.turnNumber))) return false;
+  await endCurrentTurn(roomId, "timed_out", meta);
+  return true;
+}
+
+// Settles an expired turn and tells the room, for callers whose whole purpose
+// is that (a client's countdown reaching zero) or who just discovered it in
+// passing (a write that arrived after the deadline). The deadline is checked
+// here, on the server's own clock, so a caller that is early, late, or lying
+// gets the same answer.
+export async function settleExpiredTurn(roomId: string): Promise<boolean> {
+  const [live, meta] = await Promise.all([
+    roomState.getLiveState(roomId),
+    getRoomMeta(roomId),
+  ]);
+  if (!meta) return false;
+
+  const settled = await claimAndEndExpiredTurn(roomId, live, meta);
+  if (settled) await broadcastRoomUpdate(roomId);
+  return settled;
+}
+
 // Fetches everything needed to render a room. The four reads are issued
 // together rather than awaited in turn, so the whole thing is one round trip
 // in the common case. Also settles an expired turn inline, so pollers don't
@@ -229,33 +290,46 @@ export async function getRoom(id: string): Promise<Room | undefined> {
   const meta = await getRoomMeta(id, cachedMeta);
   if (!meta) return undefined;
 
-  // Nobody's here right now. There's no background sweep for this — the
-  // next read of this room (a poll from a tab still open elsewhere, an
-  // invite-link visit, the owner's dashboard) is what notices and disbands
-  // it, once it's been empty for the full grace window rather than just
-  // this one instant (a refresh or a brief network drop shouldn't cost
-  // anyone their room).
-  if (onlineUserIds.length === 0) {
-    const emptySince = await roomState.markRoomEmptySince(id);
-    if (Date.now() - emptySince >= EMPTY_ROOM_GRACE_MS) {
-      await deleteRoom(id);
-      return undefined;
-    }
-  } else {
-    await roomState.clearRoomEmptySince(id);
-  }
+  if (await sweepIfAbandoned(id, onlineUserIds)) return undefined;
 
   let liveState = live;
-  let timedOut = false;
-  if (
-    liveState.currentTurnUserId &&
-    liveState.turnEndsAt !== null &&
-    Date.now() >= liveState.turnEndsAt &&
-    (await roomState.tryClaimTurnTimeout(id, liveState.turnNumber))
-  ) {
-    await endCurrentTurn(id, "timed_out", meta);
-    liveState = await roomState.getLiveState(id);
-    timedOut = true;
+  const timedOut = await claimAndEndExpiredTurn(id, live, meta);
+  if (timedOut) liveState = await roomState.getLiveState(id);
+
+  // Postgres owns who is in the room; Redis owns the order they play in. When
+  // only the second of those goes missing the room is left in a state it can
+  // never leave on its own: a problem loaded, players in it, and an empty
+  // rotation that advanceTurn can only answer with null, so the timer never
+  // fires and Pass does nothing. Two ways in — the turnOrder key expiring or
+  // being evicted, and the last queued player leaving a room that still has
+  // an offline participant in it (leaveRoom clears the queue, and
+  // addToTurnOrder deliberately won't reopen an empty one, since an empty
+  // queue normally means "no problem picked yet"). Rebuilt from the
+  // participant list in join order, which is the same order setRoomProblem
+  // seeds it with in the first place.
+  //
+  // Costs nothing in the ordinary case: the guard is a length check on data
+  // already in hand, and a room with a live rotation never reaches the body.
+  let order = turnOrder;
+  if (order.length === 0 && meta.problem && meta.participants.length > 0) {
+    order = meta.participants.map((p) => p.userId);
+    await roomState.setTurnOrder(id, order);
+
+    // A rebuilt rotation with nobody holding the turn would sit there looking
+    // exactly like the stall it just recovered from, so hand the turn to the
+    // first player who's actually there — the same rule the rotation itself
+    // follows — and carry on from the turn number the room had reached.
+    if (!liveState.currentTurnUserId) {
+      const onlineUserIds = await roomState.getOnlineUserIds(id);
+      const holder = roomState.pickNextTurnHolder(order, onlineUserIds, null);
+      await roomState.startTurn(
+        id,
+        holder,
+        liveState.turnNumber + 1,
+        meta.turnDurationSeconds * 1000
+      );
+      liveState = await roomState.getLiveState(id);
+    }
   }
 
   const room: Room = {
@@ -268,7 +342,7 @@ export async function getRoom(id: string): Promise<Room | undefined> {
     participants: meta.participants,
     problem: meta.problem,
     turnDurationSeconds: meta.turnDurationSeconds,
-    turnOrder,
+    turnOrder: order,
     currentTurnUserId: liveState.currentTurnUserId,
     turnNumber: liveState.turnNumber,
     turnEndsAt: liveState.turnEndsAt,
@@ -277,10 +351,10 @@ export async function getRoom(id: string): Promise<Room | undefined> {
     updatedAt: meta.updatedAt,
   };
 
-  // The clock ran out, not a person — but everyone connected still needs to
-  // see the rotation move on, so whichever caller's read happened to notice
-  // it is the one that announces it.
-  if (timedOut) await broadcastRoomUpdate(id, room);
+  // The clock ran out, or the rotation was rebuilt — nobody asked for either,
+  // but everyone connected still needs to see it, so whichever caller's read
+  // happened to notice is the one that announces it.
+  if (timedOut || order !== turnOrder) await broadcastRoomUpdate(id, room);
 
   return room;
 }
@@ -360,14 +434,23 @@ export async function getRoomByInviteCode(code: string): Promise<Room | undefine
   return getRoom(roomRow.id);
 }
 
-export async function getRoomsForUser(userId: string): Promise<Room[]> {
-  const memberRows = await db
+// The room this user is currently in, if any. Singular by construction:
+// entering a room walks you out of every other one (see leaveOtherRooms), so
+// there is never more than one active membership. `limit(1)` says so rather
+// than leaving a fan-out here that could only ever find one row.
+//
+// Returns undefined both for "not in a room" and for "the membership row
+// points at a room that just got swept" — getRoom disbands an abandoned room
+// as it reads it, and this is one of the reads that does it.
+export async function getCurrentRoomForUser(userId: string): Promise<Room | undefined> {
+  const [membership] = await db
     .select({ roomId: roomParticipants.roomId })
     .from(roomParticipants)
-    .where(and(eq(roomParticipants.userId, userId), isNull(roomParticipants.leftAt)));
+    .where(and(eq(roomParticipants.userId, userId), isNull(roomParticipants.leftAt)))
+    .limit(1);
 
-  const foundRooms = await Promise.all(memberRows.map((r) => getRoom(r.roomId)));
-  return foundRooms.filter((r): r is Room => r !== undefined);
+  if (!membership) return undefined;
+  return getRoom(membership.roomId);
 }
 
 export async function joinRoom(
@@ -458,7 +541,7 @@ export async function setRoomProblem(
       RETURNING title_slug
     )
     UPDATE rooms
-    SET problem_slug = ${problem.titleSlug}, status = 'active', updated_at = now()
+    SET problem_slug = ${problem.titleSlug}, updated_at = now()
     WHERE id = ${roomId}
   `);
 
@@ -543,10 +626,22 @@ async function endCurrentTurn(
     playerId: live.currentTurnUserId,
     turnNumber: live.turnNumber,
     codeSnapshot: live.code,
-    result,
+    result: finalTurnResult(live, result),
     startedAt: live.turnStartedAt ? new Date(live.turnStartedAt) : new Date(),
     endedAt: new Date(),
   });
+}
+
+// What actually goes in the turn's `result` column. `how` is only how the
+// turn *ended* — passed, timed out — which says nothing about whether the
+// player got anywhere. If they submitted during the turn, that verdict is the
+// more truthful answer, and it's the one that makes `solved` and `failed`
+// mean something rather than sitting unused in the enum.
+function finalTurnResult(
+  live: roomState.LiveRoomState,
+  how: "passed_turn" | "timed_out"
+): typeof turns.$inferInsert["result"] {
+  return live.turnJudgeOutcome ?? how;
 }
 
 // Runs work once the response has already gone out. Reserved for writes
@@ -651,24 +746,6 @@ export async function resumeTurn(roomId: string, userId: string): Promise<Room |
   return room ?? null;
 }
 
-// Whoever sits after `userId` in the rotation and is still in the room,
-// wrapping around the end of the queue the way the turn order itself does.
-// Undefined if the queue holds nobody else who's still here.
-function nextInQueue(
-  order: string[],
-  userId: string,
-  stillHere: Set<string>
-): string | undefined {
-  const start = order.indexOf(userId);
-  if (start === -1) return order.find((id) => id !== userId && stillHere.has(id));
-
-  for (let step = 1; step <= order.length; step++) {
-    const candidate = order[(start + step) % order.length];
-    if (candidate !== userId && stillHere.has(candidate)) return candidate;
-  }
-  return undefined;
-}
-
 export async function leaveRoom(roomId: string, userId: string): Promise<void> {
   await db
     .update(roomParticipants)
@@ -701,7 +778,7 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
             playerId: userId,
             turnNumber: live.turnNumber,
             codeSnapshot: live.code,
-            result: "passed_turn",
+            result: finalTurnResult(live, "passed_turn"),
             startedAt: live.turnStartedAt ? new Date(live.turnStartedAt) : new Date(),
             endedAt: new Date(),
           });
@@ -731,7 +808,12 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
     // that, but a free host can't grow a Pro-sized room any further.
     if (meta?.ownerId === userId) {
       const stillHere = new Set(remaining.map((r) => r.userId));
-      const nextHost = nextInQueue(order, userId, stillHere) ?? remaining[0].userId;
+      const nextHost =
+        roomState.nextInRotation(
+          order,
+          userId,
+          (id) => id !== userId && stillHere.has(id)
+        ) ?? remaining[0].userId;
       await db
         .update(rooms)
         .set({ ownerId: nextHost, updatedAt: new Date() })
@@ -743,4 +825,68 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
     const room = await getRoom(roomId);
     if (room) await broadcastRoomUpdate(roomId, room);
   }
+}
+
+// Every room id, oldest-touched first — for the cron sweep, which has to be
+// able to find rooms that nothing else ever reads. Capped so one run can't
+// outgrow the function's time budget; the next run picks up where this left
+// off, since anything it disbanded is gone and anything it didn't had its
+// updated_at left alone.
+export async function listRoomIdsForSweep(limit = 500): Promise<string[]> {
+  const rows = await db
+    .select({ id: rooms.id })
+    .from(rooms)
+    .orderBy(asc(rooms.updatedAt))
+    .limit(limit);
+  return rows.map((r) => r.id);
+}
+
+// Files a submission's verdict against the room's history. Called from the
+// judge broadcast, which is the only place a real LeetCode result ever
+// reaches the server — the extension runs in the submitting player's own
+// browser, so this is the server's single opportunity to learn how a session
+// actually went.
+//
+// This is what makes `sessions` and `turns` say anything: without it a
+// session only ever reaches `abandoned` (when the host moves to another
+// problem) and every turn reads `passed_turn`, so `completed`, `solved` and
+// `failed` sat in the schema unused. Nothing on screen reads any of it, so
+// like the rest of the history it runs after the response.
+export async function recordSubmission(
+  roomId: string,
+  accepted: boolean
+): Promise<void> {
+  const live = await roomState.getLiveState(roomId);
+  if (!live.sessionId) return;
+
+  // Remembered on the turn so that whatever ends it writes the right result —
+  // a failed submit doesn't end a turn, and an accepted one doesn't either
+  // (the room keeps playing; only the host moving on ends the session).
+  await roomState.setTurnJudgeOutcome(roomId, accepted ? "solved" : "failed");
+
+  if (!accepted) return;
+
+  const sessionId = live.sessionId;
+  const code = live.code;
+  const language = live.language;
+
+  runAfterResponse(async () => {
+    // Guarded on status so the first accepted submission is the one that
+    // closes the session — a second solve on the same problem shouldn't
+    // rewrite whose code finished it. Also stops this racing the "abandoned"
+    // update in persistSessionChange: whichever lands first, the other's
+    // WHERE no longer matches.
+    await db
+      .update(sessions)
+      .set({
+        status: "completed",
+        finalCode: code,
+        finalLanguage: language,
+        endedAt: new Date(),
+      })
+      .where(and(eq(sessions.id, sessionId), eq(sessions.status, "in_progress")));
+    // The solving turn itself is not written here — it hasn't ended yet, and
+    // turn rows are only inserted once they do. endCurrentTurn picks `solved`
+    // up from the outcome stored above when that happens.
+  });
 }

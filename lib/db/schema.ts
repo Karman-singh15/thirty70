@@ -33,8 +33,6 @@ export const problems = pgTable("problems", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const roomStatusEnum = pgEnum("room_status", ["waiting", "active", "finished"]);
-
 export const rooms = pgTable("rooms", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
@@ -43,7 +41,10 @@ export const rooms = pgTable("rooms", {
     .references(() => users.id),
   inviteCode: text("invite_code").notNull().unique(),
   problemSlug: text("problem_slug").references(() => problems.titleSlug),
-  status: roomStatusEnum("status").notNull().default("waiting"),
+  // A room has no status of its own: what's actually in progress is the
+  // session (see sessions.status below), which is what the room's history is
+  // keyed on. The old room_status column was written once per problem pick
+  // and read nowhere.
   turnDurationSeconds: integer("turn_duration_seconds").notNull().default(120),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

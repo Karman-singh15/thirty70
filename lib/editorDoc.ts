@@ -60,6 +60,13 @@ export interface RoomParticipant {
   joinedAt: number;
 }
 
+// What it takes to draw a person: everything about a participant except when
+// they joined, which only the turn order cares about. The components that
+// render people take this rather than the full RoomParticipant, so they
+// aren't tied to a field none of them read — and so there's one declaration
+// of it instead of a copy in every component that shows a face.
+export type ParticipantDisplay = Pick<RoomParticipant, "userId" | "name" | "imageUrl">;
+
 export interface RoomProblemSummary {
   titleSlug: string;
   title: string;

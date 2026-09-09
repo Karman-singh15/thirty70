@@ -2,20 +2,12 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Search, Loader2 } from "lucide-react";
-
-interface ProblemSummary {
-  title: string;
-  titleSlug: string;
-  difficulty: string;
-  frontendQuestionId: string;
-  paidOnly: boolean;
-  topicTags: { name: string; slug: string }[];
-}
+import type { LeetCodeProblemSummary } from "@/lib/leetcode";
 
 interface ProblemSearchProps {
   // Awaited, so the row that was clicked can show it's loading until the
   // problem is actually live in the room.
-  onSelect: (problem: ProblemSummary) => Promise<void> | void;
+  onSelect: (problem: LeetCodeProblemSummary) => Promise<void> | void;
 }
 
 const difficultyColor: Record<string, string> = {
@@ -26,14 +18,14 @@ const difficultyColor: Record<string, string> = {
 
 export function ProblemSearch({ onSelect }: ProblemSearchProps) {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<ProblemSummary[]>([]);
+  const [results, setResults] = useState<LeetCodeProblemSummary[]>([]);
   const [loading, setLoading] = useState(false);
   // Which problem is being loaded into the room right now. This is the
   // slowest action in the app — it fetches from LeetCode and then rewrites
   // the room's session — so it gets the most explicit feedback.
   const [selectingSlug, setSelectingSlug] = useState<string | null>(null);
 
-  async function handleSelect(problem: ProblemSummary) {
+  async function handleSelect(problem: LeetCodeProblemSummary) {
     if (selectingSlug) return;
     setSelectingSlug(problem.titleSlug);
     try {

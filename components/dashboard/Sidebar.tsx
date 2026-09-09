@@ -7,7 +7,8 @@ import { Swords, Users, Settings, Crown, Loader2 } from "lucide-react";
 import { useBillingPlan } from "@/hooks/useBillingPlan";
 
 const NAV_ITEMS = [
-  { href: "/dashboard", label: "Rooms", icon: Users },
+  // Singular: a user is in at most one room at a time.
+  { href: "/dashboard", label: "Room", icon: Users },
   { href: "/competitive", label: "Competitive", icon: Swords },
 ] as const;
 

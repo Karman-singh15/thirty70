@@ -1,87 +1,105 @@
-# Thirty70 — Collaborative LeetCode
+# thirty70 — collaborative LeetCode
 
-Solve LeetCode problems together with friends in real-time. Create private rooms, share invite links, search problems via LeetCode's GraphQL API, and collaborate in a shared code editor.
+Solve LeetCode problems together, one keyboard at a time. A room holds a
+shared Monaco editor, a rotating turn timer, and everyone's mic and camera —
+only whoever holds the turn can type, and when their time runs out the turn
+moves on.
 
-## Features
+## How it works
 
-- **Clerk authentication** — Sign up / sign in with email, Google, etc.
-- **Personal rooms** — Create rooms and share invite links with friends
-- **LeetCode search** — Search and load problems via LeetCode GraphQL API
-- **Collaborative editor** — Monaco editor with live code sync between participants
-- **Split-pane UI** — Problem description on the left, code editor on the right
+Two stores, split by how often the data changes.
+
+**Postgres (Neon)** owns the durable record: users, rooms, memberships, the
+problem catalogue, and the session/turn history. Read through Drizzle, and
+cached in Redis for 5 minutes (`room:<id>:meta`) because a Neon round trip is
+~250-550ms and the room reads this on nearly every action.
+
+**Redis (Upstash)** owns everything live: the shared document, the turn and
+timer state, presence, mic/camera flags, and the WebRTC signaling queue. It's
+also the pub/sub bus every room event travels on.
+
+**One SSE connection per browser tab** (`/api/rooms/[id]/stream`) carries all
+of it — the editor document, room state, judge results, and WebRTC signaling
+multiplexed onto a single Redis subscriber. There is no polling anywhere.
+Clients only ever POST; everything they read arrives pushed.
+
+**The editor** is not driven by a React `value`. `useSharedEditor` owns the
+Monaco model directly: local keystrokes go up as ranges, remote ranges are
+patched in, and each write is a compare-and-set against a document version so
+two people typing can't silently clobber each other.
+
+**Audio/video** is full-mesh WebRTC, browser to browser. Only the handshake
+touches the server. There is deliberately no TURN relay, so restrictive
+networks will fail to connect — the tile says so rather than sitting blank.
+
+**Run/Submit** goes through the `extension/` browser extension, which drives
+the user's own logged-in LeetCode session in a background tab. The server
+never sees a LeetCode credential; it only fans the result out to the room.
 
 ## Setup
 
-### 1. Install dependencies
-
 ```bash
-npm install
-```
-
-### 2. Configure Clerk
-
-1. Create an app at [clerk.com](https://clerk.com)
-2. Copy `.env.local.example` to `.env.local`
-3. Add your Clerk keys:
-
-```bash
-cp .env.local.example .env.local
-```
-
-```env
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
-CLERK_SECRET_KEY=sk_test_...
-```
-
-### 3. Run the dev server
-
-```bash
+npm install          # also vendors Monaco into public/monaco (see scripts/copy-monaco.mjs)
+npm run db:migrate
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+### Environment
 
-## Usage
+`.env.local`:
 
-1. **Sign up** on the landing page
-2. **Create a room** from the dashboard
-3. **Copy the invite link** and share it with friends
-4. **Search for a LeetCode problem** in the room
-5. **Code together** — changes sync automatically between participants
+| Variable | What it's for |
+|---|---|
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | Auth ([clerk.com](https://clerk.com)) |
+| `DATABASE_URL` | Postgres. Use the **pooled** Neon string — `lib/db/index.ts` sets `prepare: false` for pgbouncer |
+| `REDIS_URL` | Upstash `rediss://` URL |
+| `NEXT_PUBLIC_APP_URL` | Public origin, used for checkout return URLs |
+| `DODO_PAYMENTS_API_KEY`, `DODO_PAYMENTS_WEBHOOK_KEY`, `DODO_PAYMENTS_PRO_PRODUCT_ID` | Billing |
+| `DODO_PAYMENTS_ENVIRONMENT` | `test_mode` (default) or `live_mode` |
+| `NEXT_PUBLIC_LEETCODE_EXTENSION_ID` | The unpacked extension's id — see `extension/README.md` |
+| `CRON_SECRET` | Bearer token Vercel Cron sends to `/api/cron/sweep-rooms`. **The route refuses to run without it** |
 
-## Architecture
+## Deployment notes
 
-| Layer | Tech |
-|-------|------|
-| Auth | Clerk (`@clerk/nextjs`) |
-| Frontend | Next.js 16 App Router, Tailwind CSS |
-| Editor | Monaco Editor |
-| LeetCode data | LeetCode GraphQL API (proxied via `/api/leetcode/*`) |
-| Room state | In-memory store (dev/demo — swap for a DB in production) |
-| Sync | Polling every 1.5s via `/api/rooms/[id]/sync` |
+- **The SSE route is capped at 60s** (`maxDuration` in
+  `app/api/rooms/[id]/stream/route.ts`), which is Vercel's Hobby ceiling. The
+  stream is cut on that schedule and `EventSource` reconnects; every
+  connection opens with a full snapshot, so a reconnect is also a resync.
+  Raise it if you move to a plan with a longer limit.
+- **Every reconnect costs a Redis connection**, since each tab gets its own
+  subscriber. This is the main thing that will bite at scale — see
+  `TASK_LOG.md` for the shared-subscriber plan.
+- **Rooms are disbanded** five minutes after the last person disconnects, by
+  whoever next reads the room. `/api/cron/sweep-rooms` (daily, `vercel.json`)
+  is the backstop for rooms nobody ever reads again.
+- **Room size** is capped at 4 (8 on Pro) by `lib/roomLimits.ts`. Full mesh
+  doesn't hold up much past that without an SFU and a TURN relay; treat the
+  Pro number as aspirational until those exist.
 
-## Production notes
-
-- **Room persistence**: Rooms are stored in memory and reset on server restart. For production, replace `lib/rooms.ts` with a database (Postgres, Redis, etc.).
-- **Real-time sync**: Current polling works for small groups. For lower latency, consider WebSockets (PartyKit, Liveblocks, or Socket.io).
-- **LeetCode premium**: Only free problems can be loaded. Premium problems are marked and disabled in search results.
-
-## Project structure
+## Layout
 
 ```
 app/
-  page.tsx              Landing page
-  dashboard/page.tsx    Room list
-  room/[id]/page.tsx    Collaborative room
-  join/[code]/page.tsx  Invite link handler
-  sign-in/              Clerk sign in
-  sign-up/              Clerk sign up
+  (app)/                dashboard, competitive, settings — behind the sidebar layout
+  room/[id]/            the room itself
+  join/[code]/          invite-link handler
   api/
-    leetcode/           LeetCode GraphQL proxy
-    rooms/              Room CRUD + sync
-components/             UI components
+    rooms/[id]/stream   SSE: the one connection everything live rides on
+    rooms/[id]/editor   the editor's write path (CAS + deltas)
+    rooms/[id]/turn     pass, pause/resume, turn length, expiry
+    rooms/[id]/judge    fans one client's Run/Submit out to the room
+    rooms/[id]/signal   WebRTC signaling relay
+    cron/sweep-rooms    daily abandoned-room sweep
+    webhooks/dodo       subscription lifecycle
+hooks/
+  useSharedEditor       owns the Monaco model + the SSE connection
+  useWebRTC             the peer mesh
 lib/
-  leetcode.ts           GraphQL queries
-  rooms.ts              Room store
-proxy.ts                Clerk middleware (Next.js 16)
+  rooms.ts              durable room record (Postgres) + orchestration
+  roomState.ts          live room state (Redis) + pub/sub
+  editorDoc.ts          wire types, shared by client and server
+extension/              the LeetCode bridge extension
 ```
+
+`proxy.ts` is the Clerk middleware — Next 16 renamed the `middleware`
+convention to `proxy`.

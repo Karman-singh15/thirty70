@@ -15,6 +15,7 @@ import { useLocalMedia } from "@/hooks/useLocalMedia";
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { useSharedEditor } from "@/hooks/useSharedEditor";
 import type { JudgeBroadcast, RoomSnapshot, SignalEvent } from "@/lib/editorDoc";
+import type { LeetCodeProblemDetail } from "@/lib/leetcode";
 import { usePendingActions } from "@/hooks/usePendingActions";
 import { TopProgressBar } from "@/components/TopProgressBar";
 import { LEETCODE_LANG_SLUGS } from "@/lib/leetcode";
@@ -31,54 +32,43 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-interface RoomData {
-  id: string;
-  ownerId: string;
-  ownerPlan: "free" | "pro";
-  name: string;
-  inviteCode: string;
-  participants: { userId: string; name: string; imageUrl: string }[];
-  problem: {
-    titleSlug: string;
-    title: string;
-    difficulty: string;
-    frontendQuestionId: string;
-  } | null;
-  turnDurationSeconds: number;
-  turnOrder: string[];
-  currentTurnUserId: string | null;
-  turnNumber: number;
-  turnEndsAt: number | null;
-  turnPausedRemainingMs: number | null;
-  onlineUserIds: string[];
-  micOn: string[];
-  cameraOn: string[];
+// The room arrives in two pieces — the one-shot read below and the stream's
+// snapshots — and either can land first. The defaults cover the fields the
+// read doesn't carry, so a partial merge can never leave an array undefined
+// for a component that maps over it.
+function withRoomDefaults(prev: RoomData | null, incoming: Partial<RoomData>): RoomData {
+  return {
+    onlineUserIds: [],
+    micOn: [],
+    cameraOn: [],
+    turnOrder: [],
+    ...prev,
+    ...incoming,
+  } as RoomData;
 }
 
-interface ProblemDetail {
-  questionId: string;
-  questionFrontendId: string;
-  title: string;
-  titleSlug: string;
-  content: string;
-  difficulty: string;
-  exampleTestcases: string;
-  hints: string[];
-  codeSnippets: { lang: string; langSlug: string; code: string }[];
-}
+// The room as this page holds it: exactly what the stream pushes, plus the
+// three fields only the one-shot read carries because they never change after
+// the room is created. Composed from the wire type rather than restated, so a
+// field added to the snapshot can't silently go unhandled here.
+type RoomData = RoomSnapshot & {
+  id: string;
+  name: string;
+  inviteCode: string;
+};
 
 export default function RoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { userId: myUserId } = useAuth();
   const router = useRouter();
   const [roomId, setRoomId] = useState<string>("");
   const [room, setRoom] = useState<RoomData | null>(null);
-  const [problemDetail, setProblemDetail] = useState<ProblemDetail | null>(null);
+  const [problemDetail, setProblemDetail] = useState<LeetCodeProblemDetail | null>(null);
   const [problemLoading, setProblemLoading] = useState(false);
   const [problemWidth, setProblemWidth] = useState(420);
   const [participantsWidth, setParticipantsWidth] = useState(320);
   const mainRowRef = useRef<HTMLDivElement | null>(null);
   const widthsInitialized = useRef(false);
-  const prefetchedProblem = useRef<ProblemDetail | null>(null);
+  const prefetchedProblem = useRef<LeetCodeProblemDetail | null>(null);
   const { run, isPending, anyPending } = usePendingActions();
   const [judgeBroadcast, setJudgeBroadcast] = useState<JudgeBroadcast | null>(null);
   const [judgeDismissed, setJudgeDismissed] = useState(false);
@@ -159,32 +149,44 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     [goToDashboard]
   );
 
-  // One-shot: seeds the fields that essentially never change after creation
-  // (name, owner, invite code) and — just as importantly — is what tells us
-  // via a real status code whether we belong here at all (see
-  // departedFromResponse). Everything that actually changes over a room's
-  // life — turn state, participants, presence, media — arrives afterward
-  // over the realtime stream below, not from polling this again.
-  const fetchRoom = useCallback(async () => {
-    if (!roomId || departedRef.current) return;
+  // Reads the room without touching state. Splitting the read from the write
+  // is what lets each caller below decide whether it still wants the answer
+  // by the time it arrives, and keeps the mount effect honest about the fact
+  // that it's subscribing to the server rather than setting state on render.
+  //
+  // This is also — just as importantly — what tells us via a real status code
+  // whether we belong here at all, which it handles itself (see
+  // departedFromResponse) rather than making every caller repeat it.
+  const readRoom = useCallback(async (): Promise<Partial<RoomData> | undefined> => {
+    if (!roomId || departedRef.current) return undefined;
     const res = await fetch(`/api/rooms/${roomId}`);
-    if (departedFromResponse(res)) return;
-    if (res.ok) {
-      const { room: r } = await res.json();
-      setRoom((prev) => ({
-        onlineUserIds: [],
-        micOn: [],
-        cameraOn: [],
-        turnOrder: [],
-        ...prev,
-        ...r,
-      }));
-    }
+    if (departedFromResponse(res) || !res.ok) return undefined;
+    const { room: r } = await res.json();
+    return r as Partial<RoomData>;
   }, [roomId, departedFromResponse]);
 
+  // One-shot: seeds the fields that essentially never change after creation
+  // (name, owner, invite code). Everything that actually changes over a
+  // room's life — turn state, participants, presence, media — arrives
+  // afterward over the realtime stream below, not from reading this again.
   useEffect(() => {
-    fetchRoom();
-  }, [fetchRoom]);
+    let cancelled = false;
+    void (async () => {
+      const r = await readRoom();
+      if (cancelled || !r) return;
+      setRoom((prev) => withRoomDefaults(prev, r));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [readRoom]);
+
+  // Fallback for the turn endpoints when their own response didn't arrive —
+  // see applyRoomUpdate below for the normal path.
+  const resyncRoom = useCallback(async () => {
+    const r = await readRoom();
+    if (r) setRoom((prev) => withRoomDefaults(prev, r));
+  }, [readRoom]);
 
   // Turn state, presence and media arrive here, pushed over the same SSE
   // connection the editor uses (see the onRoomEvent wiring below) — this
@@ -221,12 +223,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   // handleProblemSelect) and this skips a second trip to LeetCode.
   const problemSlug = room?.problem?.titleSlug;
   useEffect(() => {
-    if (!problemSlug) {
-      setProblemDetail(null);
-      return;
-    }
-    if (prefetchedProblem.current?.titleSlug === problemSlug) {
-      setProblemDetail(prefetchedProblem.current);
+    if (!problemSlug) return;
+
+    // The host already has the body in hand from picking it, so skip the trip.
+    const prefetched = prefetchedProblem.current;
+    if (prefetched?.titleSlug === problemSlug) {
+      setProblemDetail(prefetched);
       return;
     }
 
@@ -245,6 +247,14 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       cancelled = true;
     };
   }, [problemSlug]);
+
+  // Whatever detail we're holding only counts while it belongs to the room's
+  // current problem. Derived rather than cleared in the effect above: a
+  // no-problem room used to null it via setState, which meant one render
+  // still showing the previous problem's body — and the room genuinely does
+  // pass through "no problem" whenever the host switches to another one.
+  const shownProblem =
+    problemDetail && problemDetail.titleSlug === problemSlug ? problemDetail : null;
 
   // Mirrors the server's rule: before any turn has started anyone may write;
   // once a turn is under way, only its holder. Computed here rather than after
@@ -331,7 +341,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   // everyone over — along with that language's starter code, when the problem
   // provides one.
   function handleLanguageChange(newLang: string) {
-    const snippet = problemDetail?.codeSnippets?.find(
+    const snippet = shownProblem?.codeSnippets?.find(
       (s) => s.langSlug === LEETCODE_LANG_SLUGS[newLang]
     );
     editor.setDocument(snippet?.code ?? editor.getCode(), newLang);
@@ -342,7 +352,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   // then the result, to the room's judge broadcast so everyone watching sees
   // the same thing this client does, not just the one who clicked.
   async function handleJudge(mode: "run" | "submit") {
-    if (!roomId || !myUserId || !problemDetail || judgeInFlightRef.current) return;
+    if (!roomId || !myUserId || !shownProblem || judgeInFlightRef.current) return;
     const myName = room?.participants.find((p) => p.userId === myUserId)?.name ?? "Someone";
 
     const post = (judge: JudgeBroadcast) =>
@@ -371,11 +381,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       const result = await runOnLeetCode(
         mode,
         {
-          slug: problemDetail.titleSlug,
-          questionId: problemDetail.questionId,
+          slug: shownProblem.titleSlug,
+          questionId: shownProblem.questionId,
           langSlug,
           code: editor.getCode(),
-          dataInput: mode === "run" ? problemDetail.exampleTestcases : undefined,
+          dataInput: mode === "run" ? shownProblem.exampleTestcases : undefined,
         },
         (stage) => void post({ status: "loading", mode, stage, userId: myUserId, name: myName })
       );
@@ -422,7 +432,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         const { room: r } = await res.json();
         applyRoomUpdate(r);
       } else {
-        fetchRoom();
+        resyncRoom();
       }
     });
   }
@@ -439,7 +449,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         const { room: r } = await res.json();
         applyRoomUpdate(r);
       } else {
-        fetchRoom();
+        resyncRoom();
       }
     });
   }
@@ -456,10 +466,17 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         const { room: r } = await res.json();
         applyRoomUpdate(r);
       } else {
-        fetchRoom();
+        resyncRoom();
       }
     });
   }
+
+  // The room learns about the rotation from the broadcast this triggers, the
+  // same as it would for a pass — so there's nothing to do with the response.
+  const handleTurnExpired = useCallback(() => {
+    if (!roomId) return;
+    fetch(`/api/rooms/${roomId}/turn/expire`, { method: "POST" }).catch(() => {});
+  }, [roomId]);
 
   const reportMediaChange = useCallback(
     (kind: "mic" | "camera", on: boolean) => {
@@ -572,6 +589,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         onPass={handlePassTurn}
         onChangeDuration={handleSetTurnDuration}
         onTogglePause={handleTogglePause}
+        onTurnExpired={handleTurnExpired}
         passPending={isPending("pass")}
         pausePending={isPending("pause")}
         durationPending={isPending("duration")}
@@ -587,7 +605,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             )}
           </div>
           <div className="flex-1 overflow-hidden">
-            <ProblemPanel problem={problemDetail} loading={problemLoading} />
+            <ProblemPanel problem={shownProblem} loading={problemLoading} />
           </div>
         </div>
 
@@ -605,7 +623,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             readOnly={readOnly}
             writerLabel={writerLabel}
             connected={editor.connected}
-            canJudge={!!problemDetail}
+            canJudge={!!shownProblem}
             onRun={() => handleJudge("run")}
             onSubmit={() => handleJudge("submit")}
             judgeState={judgeDismissed ? null : judgeBroadcast}

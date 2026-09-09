@@ -1,16 +1,11 @@
 "use client";
 
 import { ChevronRight } from "lucide-react";
-
-interface QueueParticipant {
-  userId: string;
-  name: string;
-  imageUrl: string;
-}
+import type { ParticipantDisplay } from "@/lib/editorDoc";
 
 interface TurnQueueProps {
   turnOrder: string[];
-  participants: QueueParticipant[];
+  participants: ParticipantDisplay[];
   currentTurnUserId: string | null;
   myUserId: string | null;
 }
@@ -28,7 +23,7 @@ export function TurnQueue({
   // display data. Anyone in the queue who has since left is dropped.
   const queue = turnOrder
     .map((userId) => participants.find((p) => p.userId === userId))
-    .filter((p): p is QueueParticipant => !!p);
+    .filter((p): p is ParticipantDisplay => !!p);
 
   if (queue.length === 0) return null;
 

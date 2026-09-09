@@ -1,15 +1,10 @@
 "use client";
 
 import { VideoTile } from "@/components/VideoTile";
-
-interface Participant {
-  userId: string;
-  name: string;
-  imageUrl: string;
-}
+import type { ParticipantDisplay } from "@/lib/editorDoc";
 
 interface ParticipantsPanelProps {
-  participants: Participant[];
+  participants: ParticipantDisplay[];
   onlineUserIds: string[];
   micOn: string[];
   cameraOn: string[];

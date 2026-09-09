@@ -68,6 +68,12 @@ export interface LiveRoomState {
   // cleared while this is set, so the timeout auto-advance in getRoom()
   // naturally leaves a paused turn alone.
   turnPausedRemainingMs: number | null;
+  // How this turn's last submission went, if there was one. Lives here
+  // because a turn's result is only known when the turn *ends* — a failed
+  // submit doesn't end anything, the player keeps trying — so the outcome has
+  // to be remembered across the rest of the turn to be written into the
+  // history row. Cleared whenever a turn starts.
+  turnJudgeOutcome: "solved" | "failed" | null;
 }
 
 const DEFAULT_STATE: LiveRoomState = {
@@ -81,6 +87,7 @@ const DEFAULT_STATE: LiveRoomState = {
   turnStartedAt: null,
   turnEndsAt: null,
   turnPausedRemainingMs: null,
+  turnJudgeOutcome: null,
 };
 
 export async function getLiveState(roomId: string): Promise<LiveRoomState> {
@@ -100,6 +107,10 @@ export async function getLiveState(roomId: string): Promise<LiveRoomState> {
     turnPausedRemainingMs: hash.turnPausedRemainingMs
       ? Number(hash.turnPausedRemainingMs)
       : null,
+    turnJudgeOutcome:
+      hash.turnJudgeOutcome === "solved" || hash.turnJudgeOutcome === "failed"
+        ? hash.turnJudgeOutcome
+        : null,
   };
 }
 
@@ -129,6 +140,7 @@ export async function resetLiveStateForSession(
       turnStartedAt: "",
       turnEndsAt: "",
       turnPausedRemainingMs: "",
+      turnJudgeOutcome: "",
     })
     .hincrby(key, "docVersion", 1)
     .expire(key, STATE_TTL_SECONDS)
@@ -460,9 +472,28 @@ export async function startTurn(
       turnStartedAt: now,
       turnEndsAt: now + durationMs,
       turnPausedRemainingMs: "",
+      // A fresh turn starts with no verdict on it.
+      turnJudgeOutcome: "",
     })
     .expire(key, STATE_TTL_SECONDS)
     .exec();
+}
+
+// Records how this turn's latest submission went, so whatever ends the turn
+// later (a pass, the clock, the player leaving) can write the real outcome
+// into the history row instead of a flat "passed_turn". A solve is sticky: a
+// player who gets it right and then breaks it on a second attempt still
+// solved it on this turn.
+export async function setTurnJudgeOutcome(
+  roomId: string,
+  outcome: "solved" | "failed"
+): Promise<void> {
+  const key = stateKey(roomId);
+  if (outcome === "failed") {
+    const current = await redis.hget(key, "turnJudgeOutcome");
+    if (current === "solved") return;
+  }
+  await redis.pipeline().hset(key, { turnJudgeOutcome: outcome }).expire(key, STATE_TTL_SECONDS).exec();
 }
 
 // Host-only: freezes the current turn's countdown. Idempotent — pausing an
@@ -498,25 +529,43 @@ export async function resumeTurn(roomId: string): Promise<{ turnEndsAt: number }
   return { turnEndsAt };
 }
 
-// Walks `order` starting just after `afterUserId` (or from the front, if
-// null) and returns the first user who's currently online — so a turn never
-// lands on someone who isn't there to take it. Wraps all the way around,
-// so a lone online player keeps getting the turn back rather than the
-// rotation stalling on them. Falls back to the plain next-in-rotation pick
-// only when nobody in `order` is online at all — better to hand it to
-// someone than strand the room with no turn holder until they reconnect.
+// Walks `order` starting just after `afterUserId` and returns the first
+// entry `eligible` accepts, wrapping around the end the way the rotation
+// itself does. An `afterUserId` of null — or one that isn't in `order` at
+// all, which is what a player already removed from the queue looks like —
+// starts the walk from the front.
+//
+// Every "who goes next" question in the app is this walk with a different
+// notion of eligible, so it lives in one place.
+export function nextInRotation(
+  order: string[],
+  afterUserId: string | null,
+  eligible: (userId: string) => boolean
+): string | undefined {
+  const startIndex = afterUserId ? order.indexOf(afterUserId) : -1;
+  for (let step = 1; step <= order.length; step++) {
+    const candidate = order[(startIndex + step) % order.length];
+    if (eligible(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+// The next player who's actually online, so a turn never lands on someone
+// who isn't there to take it. Wrapping means a lone online player keeps
+// getting the turn back rather than the rotation stalling on them, and when
+// nobody in `order` is online at all it falls back to the plain next entry —
+// better to hand the turn to someone than strand the room without a holder
+// until they reconnect. Callers guarantee a non-empty `order`.
 export function pickNextTurnHolder(
   order: string[],
   onlineUserIds: string[],
   afterUserId: string | null
 ): string {
   const online = new Set(onlineUserIds);
-  const startIndex = afterUserId ? order.indexOf(afterUserId) : -1;
-  for (let step = 1; step <= order.length; step++) {
-    const candidate = order[(startIndex + step) % order.length];
-    if (online.has(candidate)) return candidate;
-  }
-  return order[(startIndex + 1) % order.length];
+  return (
+    nextInRotation(order, afterUserId, (id) => online.has(id)) ??
+    nextInRotation(order, afterUserId, () => true)!
+  );
 }
 
 // Rotates to the next *online* player in turnOrder after theirs, and starts
@@ -623,6 +672,21 @@ export async function drainSignals(roomId: string, userId: string): Promise<Sign
       return [];
     }
   });
+}
+
+// Whether the current turn's clock has run out. A paused turn never is: the
+// pause clears turnEndsAt and parks the remainder in turnPausedRemainingMs
+// (both checked here rather than relying on that invariant holding).
+//
+// Pure and synchronous on state a caller already has, so the hot write paths
+// can gate on it without paying for another read.
+export function isTurnExpired(state: LiveRoomState): boolean {
+  return (
+    state.currentTurnUserId !== null &&
+    state.turnPausedRemainingMs === null &&
+    state.turnEndsAt !== null &&
+    Date.now() >= state.turnEndsAt
+  );
 }
 
 // Ensures only one concurrent poller processes a given turn's timeout —

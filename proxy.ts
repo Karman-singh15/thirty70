@@ -10,6 +10,10 @@ const isPublicRoute = createRouteMatcher([
   // Called by Dodo Payments directly, not from the browser — no Clerk
   // session to check. The route verifies Dodo's own signature instead.
   "/api/webhooks/dodo",
+  // Same deal for Vercel Cron: it invokes the route with a bearer token and
+  // no session. The route checks CRON_SECRET itself and refuses to run at
+  // all when that isn't configured.
+  "/api/cron/(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

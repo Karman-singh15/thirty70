@@ -7,11 +7,12 @@ import { ParticipantsList } from "@/components/ParticipantsList";
 import { MediaControls } from "@/components/MediaControls";
 import { Spinner } from "@/components/Spinner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import type { ParticipantDisplay } from "@/lib/editorDoc";
 
 interface RoomHeaderProps {
   roomName: string;
   inviteCode: string;
-  participants: { userId: string; name: string; imageUrl: string }[];
+  participants: ParticipantDisplay[];
   onlineUserIds: string[];
   micOn: string[];
   cameraOn: string[];

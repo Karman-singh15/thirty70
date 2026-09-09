@@ -1,18 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pause, Play, SkipForward } from "lucide-react";
 import { TurnQueue } from "@/components/TurnQueue";
 import { Spinner } from "@/components/Spinner";
-
-interface TurnParticipant {
-  userId: string;
-  name: string;
-  imageUrl: string;
-}
+import type { ParticipantDisplay } from "@/lib/editorDoc";
 
 interface TurnBarProps {
-  participants: TurnParticipant[];
+  participants: ParticipantDisplay[];
   turnOrder: string[];
   currentTurnUserId: string | null;
   turnNumber: number;
@@ -25,6 +20,9 @@ interface TurnBarProps {
   onPass: () => void;
   onChangeDuration: (seconds: number) => void;
   onTogglePause: (paused: boolean) => void;
+  // Fired once per turn, the moment this tab's countdown reaches zero. See
+  // the effect below for why the client is the one watching the clock.
+  onTurnExpired: () => void;
   passPending?: boolean;
   pausePending?: boolean;
   durationPending?: boolean;
@@ -58,6 +56,7 @@ export function TurnBar({
   onPass,
   onChangeDuration,
   onTogglePause,
+  onTurnExpired,
   passPending = false,
   pausePending = false,
   durationPending = false,
@@ -70,6 +69,28 @@ export function TurnBar({
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [turnEndsAt]);
+
+  // Nothing on the server is watching this clock. Since polling was removed
+  // the rotation only moved when some unrelated read happened to land, so a
+  // turn could sit visibly at 0:00 for most of a heartbeat before anything
+  // happened — the timer being the whole mechanic, that reads as broken.
+  // This tab is already counting the same deadline down for display, so the
+  // moment it reaches zero it says so.
+  //
+  // Every tab in the room does this at once and that's fine: the server
+  // claims the turn number atomically, so one call rotates and the rest are
+  // no-ops. Guarded per turn number so a tab whose clock is behind can't fire
+  // twice for the same turn, and so the rotation that follows doesn't
+  // immediately re-trigger it.
+  const expiredTurnRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (currentTurnUserId === null || turnEndsAt === null) return;
+    if (turnPausedRemainingMs !== null) return;
+    if (turnEndsAt - now > 0) return;
+    if (expiredTurnRef.current === turnNumber) return;
+    expiredTurnRef.current = turnNumber;
+    onTurnExpired();
+  }, [now, turnEndsAt, turnPausedRemainingMs, currentTurnUserId, turnNumber, onTurnExpired]);
 
   if (!hasProblem) {
     return (

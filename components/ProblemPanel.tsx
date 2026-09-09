@@ -1,18 +1,9 @@
 "use client";
 
-interface ProblemDetail {
-  questionFrontendId: string;
-  title: string;
-  titleSlug: string;
-  content: string;
-  difficulty: string;
-  exampleTestcases: string;
-  hints: string[];
-  codeSnippets: { lang: string; langSlug: string; code: string }[];
-}
+import type { LeetCodeProblemDetail } from "@/lib/leetcode";
 
 interface ProblemPanelProps {
-  problem: ProblemDetail | null;
+  problem: LeetCodeProblemDetail | null;
   loading: boolean;
 }
 

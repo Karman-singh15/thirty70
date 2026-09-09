@@ -6,13 +6,17 @@ import { Users, Code2 } from "lucide-react";
 import { CreateRoomButton } from "@/components/CreateRoomButton";
 import { JoinRoomForm } from "@/components/JoinRoomForm";
 
-interface RoomSummary {
+// You are in at most one room at a time — creating or joining one walks you
+// out of any other (see leaveOtherRooms in lib/rooms.ts). So this shows the
+// room you're in, not a list of rooms you could be in: a grid here could only
+// ever hold one card, and presenting it as a list quietly implied you could
+// keep several going at once.
+interface CurrentRoom {
   id: string;
   name: string;
   ownerName: string;
   participantCount: number;
   problem: { title: string; difficulty: string } | null;
-  createdAt: number;
 }
 
 const difficultyColor: Record<string, string> = {
@@ -22,14 +26,23 @@ const difficultyColor: Record<string, string> = {
 };
 
 export default function DashboardPage() {
-  const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [room, setRoom] = useState<CurrentRoom | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/rooms")
-      .then((r) => r.json())
-      .then((data) => setRooms(data.rooms ?? []))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/rooms");
+        const data = await res.json();
+        if (!cancelled) setRoom(data.room ?? null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -37,11 +50,12 @@ export default function DashboardPage() {
       <div className="mb-9 flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-            Rooms
+            Your room
           </h1>
           <p className="mt-1.5 text-sm text-zinc-500">
-            Create a room, invite a friend, and pick a problem to work
-            through together.
+            Start a room, invite a friend, and pick a problem to work through
+            together. You&apos;re in one room at a time — starting or joining
+            another leaves the one you&apos;re in.
           </p>
         </div>
         <div className="flex flex-col gap-3 sm:items-end">
@@ -53,58 +67,42 @@ export default function DashboardPage() {
       </div>
 
       {loading ? (
-        <div className="grid gap-3">
-          {[0, 1].map((i) => (
-            <div
-              key={i}
-              className="h-[68px] animate-pulse rounded-xl border border-zinc-900 bg-zinc-900/40"
-            />
-          ))}
-        </div>
-      ) : rooms.length === 0 ? (
+        <div className="h-[68px] animate-pulse rounded-xl border border-zinc-900 bg-zinc-900/40" />
+      ) : !room ? (
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-zinc-800 py-20 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-zinc-900">
             <Code2 className="h-5 w-5 text-zinc-600" />
           </div>
-          <p className="text-sm font-medium text-zinc-300">No rooms yet</p>
+          <p className="text-sm font-medium text-zinc-300">You&apos;re not in a room</p>
           <p className="max-w-xs text-sm text-zinc-500">
             Start one above and share the invite link with whoever you&apos;re
             practicing with.
           </p>
         </div>
       ) : (
-        <div className="grid gap-2.5">
-          {rooms.map((room) => (
-            <Link
-              key={room.id}
-              href={`/room/${room.id}`}
-              className="group flex items-center justify-between rounded-xl border border-zinc-900 bg-zinc-900/40 px-5 py-4 transition hover:border-zinc-800 hover:bg-zinc-900"
-            >
-              <div className="min-w-0">
-                <h3 className="truncate font-medium text-zinc-100">
-                  {room.name}
-                </h3>
-                <p className="mt-0.5 truncate text-xs text-zinc-500">
-                  by {room.ownerName}
-                  {room.problem && (
-                    <>
-                      {" · "}
-                      <span
-                        className={difficultyColor[room.problem.difficulty] ?? ""}
-                      >
-                        {room.problem.title}
-                      </span>
-                    </>
-                  )}
-                </p>
-              </div>
-              <div className="ml-4 flex shrink-0 items-center gap-1 text-xs text-zinc-500 transition group-hover:text-zinc-300">
-                <Users className="h-3.5 w-3.5" />
-                {room.participantCount}
-              </div>
-            </Link>
-          ))}
-        </div>
+        <Link
+          href={`/room/${room.id}`}
+          className="group flex items-center justify-between rounded-xl border border-zinc-900 bg-zinc-900/40 px-5 py-4 transition hover:border-zinc-800 hover:bg-zinc-900"
+        >
+          <div className="min-w-0">
+            <h3 className="truncate font-medium text-zinc-100">{room.name}</h3>
+            <p className="mt-0.5 truncate text-xs text-zinc-500">
+              by {room.ownerName}
+              {room.problem && (
+                <>
+                  {" · "}
+                  <span className={difficultyColor[room.problem.difficulty] ?? ""}>
+                    {room.problem.title}
+                  </span>
+                </>
+              )}
+            </p>
+          </div>
+          <div className="ml-4 flex shrink-0 items-center gap-1 text-xs text-zinc-500 transition group-hover:text-zinc-300">
+            <Users className="h-3.5 w-3.5" />
+            {room.participantCount}
+          </div>
+        </Link>
       )}
     </div>
   );

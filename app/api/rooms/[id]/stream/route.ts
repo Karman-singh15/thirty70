@@ -1,9 +1,10 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { broadcastRoomUpdate, getRoomSnapshot, isRoomMember } from "@/lib/rooms";
+import { getRoomSnapshot, isRoomMember } from "@/lib/rooms";
 import {
   drainSignals,
   getLiveState,
+  publishRoomEvent,
   subscribeRoomChannels,
   touchPresence,
   type EditorEvent,
@@ -30,8 +31,15 @@ import {
 // presence window to be noticed. The explicit Leave button already handles
 // the case that actually needs to be instant.
 
-export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+// Vercel Hobby caps a function at 60s, and an SSE stream is a function that
+// never returns — so this connection *will* be cut, on a schedule. Saying so
+// explicitly is what makes that predictable rather than a mystery disconnect:
+// EventSource reconnects on its own, the server opens every connection with a
+// full snapshot (see below), and PRESENCE_WINDOW_MS is sized to ride out the
+// gap. Every reconnect costs a fresh Redis subscriber, so the work done on
+// connect below is kept to the minimum.
+export const maxDuration = 60;
 
 const HEARTBEAT_MS = 20_000;
 
@@ -98,6 +106,11 @@ export async function GET(
       const live = await getLiveState(id);
       writeEvent({ type: "doc", version: live.docVersion, code: live.code, language: live.language });
 
+      // One snapshot serves both this client's opening state and the
+      // announcement to everyone else below — touchPresence above already
+      // ran, so it reflects this connection as online. Building it twice
+      // (which is what a bare broadcastRoomUpdate would do) cost a second
+      // full getRoom on every single connect and reconnect.
       const snapshot = await getRoomSnapshot(id);
       if (snapshot) writeEvent({ type: "room", room: snapshot });
 
@@ -117,8 +130,9 @@ export async function GET(
       // Announce this connection to everyone else — covers both "a new
       // person just came online" and "someone's browser reconnected after a
       // blip", uniformly: presence is just a timestamp refresh either way, so
-      // there's no offline-then-online transition to cause a flicker.
-      await broadcastRoomUpdate(id);
+      // there's no offline-then-online transition to cause a flicker. Reuses
+      // the snapshot built above rather than computing a second one.
+      if (snapshot) await publishRoomEvent(id, snapshot);
 
       // Doubles as the presence refresh (see file header) and, as a cheap
       // self-heal, re-sends this client its own room snapshot — insurance

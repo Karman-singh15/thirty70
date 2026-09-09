@@ -1,15 +1,10 @@
 "use client";
 
 import { Mic } from "lucide-react";
-
-interface Participant {
-  userId: string;
-  name: string;
-  imageUrl: string;
-}
+import type { ParticipantDisplay } from "@/lib/editorDoc";
 
 interface ParticipantsListProps {
-  participants: Participant[];
+  participants: ParticipantDisplay[];
   onlineUserIds: string[];
   micOn: string[];
   cameraOn: string[];

@@ -33,6 +33,13 @@ export async function POST(req: NextRequest) {
       user.imageUrl ?? ""
     );
 
+    // joinRoom returns null when the room went away between the lookup above
+    // and the insert — rare, but a 200 carrying `{ room: null }` is worse than
+    // rare: the client reads room.id straight off it and throws.
+    if (!room) {
+      return NextResponse.json({ error: "That room no longer exists" }, { status: 404 });
+    }
+
     return NextResponse.json({ room });
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 409 });

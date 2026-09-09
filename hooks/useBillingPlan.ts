@@ -19,17 +19,32 @@ export function useBillingPlan() {
   const [error, setError] = useState<string | null>(null);
   const justUpgraded = useRef(searchParams.get("upgrade") === "success");
 
-  const fetchStatus = useCallback(async () => {
+  // Reads the plan without touching state. Keeping the write out of here is
+  // what lets each caller below decide whether it still wants the answer by
+  // the time it arrives — and keeps the effects honest about the fact that
+  // they're subscribing to an external system, not setting state on render.
+  // `undefined` means "couldn't tell", which is not the same as "no plan".
+  const readStatus = useCallback(async (): Promise<Plan | undefined> => {
     const res = await fetch("/api/billing/status");
-    if (!res.ok) return null;
+    if (!res.ok) return undefined;
     const data = await res.json();
-    setPlan(data.plan);
     return data.plan as Plan;
   }, []);
 
+  // The plan lives on the server; this subscribes to it once on mount. The
+  // cancel flag matters because Sidebar unmounts on any navigation out of the
+  // app layout, and a reply landing after that would be a state write to a
+  // component that's gone.
   useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
+    let cancelled = false;
+    void (async () => {
+      const current = await readStatus();
+      if (!cancelled && current !== undefined) setPlan(current);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [readStatus]);
 
   useEffect(() => {
     if (!justUpgraded.current) return;
@@ -37,15 +52,21 @@ export function useBillingPlan() {
     router.replace("/dashboard");
 
     let attempt = 0;
+    let cancelled = false;
     const interval = setInterval(async () => {
       attempt += 1;
-      const current = await fetchStatus();
+      const current = await readStatus();
+      if (cancelled) return;
+      if (current !== undefined) setPlan(current);
       if (current === "pro" || attempt >= POLL_ATTEMPTS) {
         clearInterval(interval);
       }
     }, POLL_INTERVAL_MS);
 
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
     // Only ever runs once, right after the redirect back from checkout.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

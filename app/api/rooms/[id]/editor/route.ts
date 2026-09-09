@@ -1,9 +1,10 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { getRoomMeta, isRoomMemberCached } from "@/lib/rooms";
+import { getRoomMeta, isRoomMemberCached, settleExpiredTurn } from "@/lib/rooms";
 import {
   casSetCode,
   getLiveState,
+  isTurnExpired,
   publishEditorEvent,
   type CursorPosition,
   type DocChange,
@@ -109,6 +110,18 @@ export async function POST(
     : await isRoomMemberCached(id, userId);
   if (!allowed) {
     return NextResponse.json({ error: "Not your turn" }, { status: 403 });
+  }
+
+  // Holding the turn is not the same as the turn still being live. Without
+  // this the clock is decoration: whoever held it when it expired keeps
+  // writing until some unrelated read happens to notice, which since polling
+  // was removed can be the better part of a heartbeat away. Free on the happy
+  // path — it's a comparison against the state already read above — and on
+  // the rare path it rotates the room then and there rather than letting the
+  // next reader do it.
+  if (isTurnExpired(live)) {
+    await settleExpiredTurn(id);
+    return NextResponse.json({ error: "Your turn ended" }, { status: 403 });
   }
 
   // Nothing to write until a problem is picked. currentTurnUserId can be null
