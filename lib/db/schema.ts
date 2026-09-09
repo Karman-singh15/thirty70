@@ -3,11 +3,12 @@ import {
   text,
   integer,
   timestamp,
+  index,
   primaryKey,
   uuid,
   pgEnum,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 export const userPlanEnum = pgEnum("user_plan", ["free", "pro"]);
 
@@ -48,7 +49,10 @@ export const rooms = pgTable("rooms", {
   turnDurationSeconds: integer("turn_duration_seconds").notNull().default(120),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  // listRoomIdsForSweep orders the whole table by updated_at every night.
+  index("rooms_updated_at_idx").on(t.updatedAt),
+]);
 
 export const roomParticipants = pgTable(
   "room_participants",
@@ -62,7 +66,21 @@ export const roomParticipants = pgTable(
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
     leftAt: timestamp("left_at", { withTimezone: true }),
   },
-  (t) => [primaryKey({ columns: [t.roomId, t.userId] })]
+  (t) => [
+    primaryKey({ columns: [t.roomId, t.userId] }),
+    // The composite primary key is (room_id, user_id), so it cannot serve a
+    // lookup by user_id alone — user_id isn't the leading column, and Postgres
+    // does not index foreign-key columns automatically. getCurrentRoomForUser
+    // filters on exactly this and runs on every dashboard load, so without
+    // this it is a sequential scan over every membership row ever written.
+    //
+    // Partial, because that query only ever wants live memberships: the index
+    // then holds one row per person currently in a room rather than one per
+    // room they have ever joined, and stays small as history grows.
+    index("room_participants_active_user_idx")
+      .on(t.userId)
+      .where(sql`${t.leftAt} is null`),
+  ]
 );
 
 // One row per problem attempt in a room — what actually gets "played".
@@ -85,7 +103,10 @@ export const sessions = pgTable("sessions", {
   finalLanguage: text("final_language"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   endedAt: timestamp("ended_at", { withTimezone: true }),
-});
+}, (t) => [
+  // Every read of a room's history starts from its sessions.
+  index("sessions_room_idx").on(t.roomId),
+]);
 
 // One row per player's turn within a session — the audit trail for turn-based play.
 export const turnResultEnum = pgEnum("turn_result", [
@@ -108,7 +129,10 @@ export const turns = pgTable("turns", {
   result: turnResultEnum("result"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   endedAt: timestamp("ended_at", { withTimezone: true }),
-});
+}, (t) => [
+  // Turns are only ever read as "the turns of this session".
+  index("turns_session_idx").on(t.sessionId),
+]);
 
 export const usersRelations = relations(users, ({ many }) => ({
   ownedRooms: many(rooms),

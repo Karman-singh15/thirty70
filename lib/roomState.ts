@@ -363,33 +363,110 @@ export async function publishSignal(
   await redis.publish(roomChannel(roomId), JSON.stringify({ type: "signal", to, ...payload }));
 }
 
-// Server-side listener behind the SSE route. One Redis connection per client
-// carries both channels — a connection in subscriber mode can't serve
-// anything else, so multiplexing here is what keeps "one browser tab, one
-// Redis connection" true even as more event types ride the same stream.
-// Hands back a teardown to run when the client disconnects.
+// Server-side listener behind the SSE route.
+//
+// One Redis subscriber per *room per server instance*, not per browser tab.
+// The stream is capped at 60s on Vercel Hobby, so every tab used to open a
+// fresh subscriber connection every minute — a four-person room churned four
+// connections a minute, and Upstash bills and caps on concurrent connections.
+// That was the ceiling this design hit first, before CPU or Postgres.
+//
+// The signature is unchanged, so the SSE route is untouched: callers still get
+// a teardown to run on disconnect. What changed is that the second tab in a
+// room attaches to the existing connection instead of opening another, and the
+// connection closes when the last one detaches.
+
+interface RoomChannelHandlers {
+  onEditorEvent: (raw: string) => void;
+  onRoomEvent: (raw: string) => void;
+}
+
+interface RoomSubscription {
+  sub: ReturnType<typeof createRedisSubscriber>;
+  listeners: Set<RoomChannelHandlers>;
+}
+
+// Survives hot reloads in development the same way the Redis client itself
+// does — without this, every edit leaks a subscriber per open room.
+const globalForSubs = globalThis as unknown as {
+  roomSubscriptions?: Map<string, RoomSubscription>;
+};
+const roomSubscriptions: Map<string, RoomSubscription> =
+  globalForSubs.roomSubscriptions ?? new Map();
+if (process.env.NODE_ENV !== "production") {
+  globalForSubs.roomSubscriptions = roomSubscriptions;
+}
+
 export function subscribeRoomChannels(
   roomId: string,
-  handlers: { onEditorEvent: (raw: string) => void; onRoomEvent: (raw: string) => void }
+  handlers: RoomChannelHandlers
 ): () => void {
-  const sub = createRedisSubscriber();
   const editorCh = editorChannel(roomId);
   const roomCh = roomChannel(roomId);
 
-  sub.subscribe(editorCh, roomCh).catch(() => {});
-  sub.on("message", (received, raw) => {
-    if (received === editorCh) handlers.onEditorEvent(raw);
-    else if (received === roomCh) handlers.onRoomEvent(raw);
-  });
-  // A dropped connection reconnects and resubscribes on its own; the client
-  // resyncs from the snapshot it gets on its own reconnect, so there's
-  // nothing to recover here beyond not crashing.
-  sub.on("error", () => {});
+  let entry = roomSubscriptions.get(roomId);
 
+  if (!entry) {
+    const sub = createRedisSubscriber();
+    const listeners = new Set<RoomChannelHandlers>();
+    entry = { sub, listeners };
+    roomSubscriptions.set(roomId, entry);
+
+    sub.on("message", (received, raw) => {
+      for (const listener of listeners) {
+        // One listener throwing must not stop the fan-out to the rest of the
+        // room. This mattered less when every tab owned its own connection —
+        // a throw only cost that tab. Now it would cost everyone.
+        try {
+          if (received === editorCh) listener.onEditorEvent(raw);
+          else if (received === roomCh) listener.onRoomEvent(raw);
+        } catch (err) {
+          report("room_subscription.listener_failed", err, { roomId });
+        }
+      }
+    });
+
+    // A dropped connection reconnects and ioredis resubscribes on its own;
+    // clients resync from the snapshot they get on their own reconnect, so
+    // there is nothing to recover here beyond not crashing.
+    sub.on("error", (err) => {
+      report("room_subscription.connection_error", err, { roomId });
+    });
+
+    sub.subscribe(editorCh, roomCh).catch((err) => {
+      report("room_subscription.subscribe_failed", err, { roomId });
+    });
+  }
+
+  entry.listeners.add(handlers);
+
+  let released = false;
   return () => {
-    sub.removeAllListeners();
-    sub.quit().catch(() => sub.disconnect());
+    // The SSE route calls cleanup from several paths (client abort, stream
+    // close, error), so this has to be safe to call more than once — without
+    // the guard, a second call would decrement a count it no longer owns and
+    // close a connection other tabs are still using.
+    if (released) return;
+    released = true;
+
+    const current = roomSubscriptions.get(roomId);
+    if (!current) return;
+    current.listeners.delete(handlers);
+    if (current.listeners.size > 0) return;
+
+    // Drop it from the map *before* closing, so a tab arriving during teardown
+    // builds a fresh subscriber rather than attaching to a dying one.
+    roomSubscriptions.delete(roomId);
+    current.sub.removeAllListeners();
+    current.sub.quit().catch(() => current.sub.disconnect());
   };
+}
+
+/** Open room subscriptions on this instance. Exposed for diagnostics. */
+export function roomSubscriptionStats(): { rooms: number; listeners: number } {
+  let listeners = 0;
+  for (const entry of roomSubscriptions.values()) listeners += entry.listeners.size;
+  return { rooms: roomSubscriptions.size, listeners };
 }
 
 // --- Presence ---

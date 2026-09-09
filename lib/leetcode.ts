@@ -1,3 +1,5 @@
+import sanitizeHtml from "sanitize-html";
+
 const LEETCODE_GRAPHQL_URL = "https://leetcode.com/graphql";
 
 // Our editor's language values -> LeetCode's own langSlug values. Used both
@@ -11,6 +13,51 @@ export const LEETCODE_LANG_SLUGS: Record<string, string> = {
   go: "golang",
   typescript: "typescript",
 };
+
+// The problem statement is rendered with dangerouslySetInnerHTML — it has to
+// be, it's formatted prose with code blocks — so it is arbitrary third-party
+// markup executing on our origin, in a page holding a live Clerk session.
+// Sanitising here rather than at the render site means it is clean before it
+// is ever cached by `next: { revalidate }`, stored, or handed to a client, and
+// there is exactly one place to get it right.
+//
+// The allowlist is what LeetCode actually uses in question bodies. Anything
+// else — script, style, iframe, event handlers, javascript: URLs — is dropped
+// rather than escaped, so it simply doesn't exist by the time React sees it.
+const PROBLEM_HTML: sanitizeHtml.IOptions = {
+  allowedTags: [
+    "p", "br", "hr", "div", "span",
+    "strong", "b", "em", "i", "u", "s", "code", "pre", "sub", "sup", "small",
+    "ul", "ol", "li", "dl", "dt", "dd",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "img", "a", "blockquote", "figure", "figcaption",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+  ],
+  allowedAttributes: {
+    // rel and target are allowed because transformTags below *adds* them —
+    // the attribute allowlist is applied after the transform, so omitting
+    // them here silently strips the hardening back off again.
+    a: ["href", "title", "rel", "target"],
+    img: ["src", "alt", "title", "width", "height"],
+    "*": ["class"],
+  },
+  // No data: URIs — an SVG data URI is a script delivery mechanism.
+  allowedSchemes: ["http", "https", "mailto"],
+  allowedSchemesAppliedToAttributes: ["href", "src"],
+  transformTags: {
+    // Anything LeetCode links out to is a third-party destination opened from
+    // our page; noopener stops it reaching back through window.opener.
+    a: sanitizeHtml.simpleTransform("a", {
+      rel: "noopener noreferrer nofollow",
+      target: "_blank",
+    }),
+  },
+};
+
+/** Clean a LeetCode-authored HTML fragment before it can reach a browser. */
+export function sanitizeProblemHtml(html: string): string {
+  return sanitizeHtml(html, PROBLEM_HTML);
+}
 
 async function leetcodeFetch<T>(query: string, variables: Record<string, unknown>): Promise<T> {
   const res = await fetch(LEETCODE_GRAPHQL_URL, {
@@ -110,5 +157,8 @@ export async function getProblem(titleSlug: string): Promise<LeetCodeProblemDeta
     titleSlug,
   });
 
-  return data.question;
+  if (!data.question) return null;
+
+  // Sanitised at the boundary, so no caller can forget.
+  return { ...data.question, content: sanitizeProblemHtml(data.question.content ?? "") };
 }

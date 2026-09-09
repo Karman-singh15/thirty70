@@ -2693,3 +2693,94 @@ build.
 
 **Also:** `@types/node` moved from ^20 to ^24. Vitest 5 requires it, and ^20
 was already behind the Node 26 runtime in use. Typecheck stayed clean.
+
+---
+
+## P1 from the review: indexes, rate limits, sanitising, shared subscribers
+
+**Date:** 2026-09-10
+
+**1 — Database indexes (`drizzle/0004_uneven_sersi.sql`).** The schema had no
+secondary indexes at all. The one that mattered:
+`room_participants` has primary key `(room_id, user_id)`, so a lookup by
+`user_id` alone can't use it — and Postgres doesn't index foreign-key columns
+by itself. `getCurrentRoomForUser` filters on exactly that and runs on every
+dashboard load.
+
+Added a **partial** index — `(user_id) WHERE left_at IS NULL` — which matches
+the query and holds one row per person currently in a room rather than one per
+room they've ever joined. Plus `sessions(room_id)`, `turns(session_id)` and
+`rooms(updated_at)` for the sweep's ordering.
+
+Verified with `EXPLAIN`. The table is empty so the planner still picks a seq
+scan (correctly); with `enable_seqscan = off` it chooses
+`Index Scan using room_participants_active_user_idx, Index Cond: (user_id = …)`,
+which is what confirms the index actually serves the query.
+
+**2 — `lib/rateLimit.ts`.** Fixed-window counter on the existing Redis, via one
+Lua script. Not `@upstash/ratelimit`: that needs the REST client and its own
+two environment variables, and this app talks to Upstash over ioredis with a
+single `REDIS_URL`.
+
+`INCR` and `EXPIRE` are in Lua rather than two client commands, because a crash
+between them leaves a counter with no TTL and locks that caller out
+permanently. It **fails open** — Redis being down already breaks the room, and
+refusing every request on top turns a degraded app into a dead one.
+
+Applied to the LeetCode proxy (60/min/user, the real abuse vector: those calls
+go to leetcode.com from the deployment's IP, so one user in a loop gets
+*everyone* blocked) and to the signal relay (240/min/room/user).
+
+**Deliberately not applied to the editor.** It flushes on a 60ms debounce —
+about 1,000 writes a minute while someone types continuously — so any limit low
+enough to matter would break normal typing. Its protection is the CAS and the
+existing `MAX_DOC_CHARS` / `MAX_CHANGES` caps.
+
+Verified against real Redis with the exact Lua from the source: limit 5 over 8
+calls gave 5 allowed / 3 blocked, TTL set on the first call and not reset by
+later ones (so the window doesn't slide).
+
+**3 — HTML sanitising.** The problem body is rendered with
+`dangerouslySetInnerHTML`, so it's third-party markup executing on our origin
+in a page holding a live Clerk session. Now sanitised in `lib/leetcode.ts` at
+the fetch boundary — before it's cached by `next: { revalidate }`, stored, or
+handed to any client, and in exactly one place.
+
+**A test caught a real config bug:** `transformTags` adds `rel="noopener"` to
+links, but `allowedAttributes` is applied *after* the transform, so omitting
+`rel`/`target` there silently stripped the hardening straight back off.
+
+**4 — One Redis subscriber per room, not per tab.** The documented ceiling.
+`subscribeRoomChannels` keeps its signature, so the SSE route is untouched;
+underneath, subscribers are shared per room per instance and refcounted.
+
+Three details that are load-bearing: the teardown is idempotent (the SSE route
+calls cleanup from several paths, and a second call would otherwise close a
+connection other tabs still hold); the entry is removed from the map *before*
+the connection closes, so a tab arriving mid-teardown builds a fresh subscriber
+rather than attaching to a dying one; and each listener is called inside a
+`try` — with one connection serving the whole room, a single throwing listener
+would otherwise stop the fan-out to everyone.
+
+Measured against real Redis via `connected_clients`:
+
+| state | connections | reading |
+|---|---|---|
+| no streams | 1 | probe only |
+| 1 stream | 2 | probe + one subscriber |
+| **3 streams, same room** | **2** | still one subscriber — would have been 3 |
+| 2 closed, 1 open | 2 | refcount holds |
+| all closed | 1 | released, no leak |
+
+**5 — Signal relay hardened.** `m.to` is now checked against the room's
+participant list (delivery was already scoped to the room channel, but
+`queueSignal` *persists*, so unchecked recipients let a member fill Redis with
+messages nobody will read). Batch capped at 64, `data` at 16KB.
+
+**Verified:** 45/45 tests, clean `tsc --noEmit`, clean `eslint`, successful
+build, plus the live measurements above.
+
+**Not done from P1:** nothing — but note the subscriber change is the one piece
+here that wants a second pair of eyes in a real two-person room before it
+ships, since a fan-out bug affects everyone in a room at once rather than one
+tab.
