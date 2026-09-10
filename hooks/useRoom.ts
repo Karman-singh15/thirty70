@@ -69,23 +69,30 @@ export function useRoom(params: Promise<{ id: string }>) {
     params.then((p) => setRoomId(p.id));
   }, [params]);
 
-  // Mirrors how Google Meet handles a closed tab: tell the server this
-  // participant is gone the moment the page actually goes away, rather than
-  // waiting for their presence to quietly time out. sendBeacon is what makes
-  // this reliable during unload — a normal fetch can get cancelled before it
-  // reaches the network once the page starts tearing down. `persisted`
-  // distinguishes a real close/navigate-away from the page merely being
-  // frozen into the back/forward cache, which isn't a departure.
+  // Tell the server this participant went dark the moment the page actually
+  // goes away, rather than waiting for their presence to quietly time out.
+  // sendBeacon is what makes this reliable during unload — a normal fetch can
+  // get cancelled before it reaches the network once the page starts tearing
+  // down. `persisted` distinguishes a real close/navigate-away from the page
+  // merely being frozen into the back/forward cache, which isn't a departure.
+  //
+  // Posts to /away, not /leave. `pagehide` cannot tell a close from a reload —
+  // it fires for both — so treating it as a departure meant refreshing a room
+  // page resigned your membership, and resigned the *last* membership deleted
+  // the room out from under the very reload that was about to re-enter it.
+  // /away drops presence only: everyone else still sees you go dark
+  // immediately, which is what this is for, but the seat stays yours.
   //
   // This is on top of, not instead of, the server's own presence-timeout
-  // fallback (see getRoom in lib/rooms.ts) — a crash, a force-quit, or the
-  // OS killing the tab never fires pagehide, so that fallback is still what
-  // eventually cleans those cases up.
+  // fallback (see getRoom in lib/rooms.ts) — a crash, a force-quit, or the OS
+  // killing the tab never fires pagehide, so that fallback is still what
+  // eventually cleans those cases up, and it is now also what retires a tab
+  // that closed for good instead of reloading.
   useEffect(() => {
     if (!roomId) return;
     const handlePageHide = (e: PageTransitionEvent) => {
       if (e.persisted) return;
-      navigator.sendBeacon(`/api/rooms/${roomId}/leave`);
+      navigator.sendBeacon(`/api/rooms/${roomId}/away`);
     };
     window.addEventListener("pagehide", handlePageHide);
     return () => window.removeEventListener("pagehide", handlePageHide);
