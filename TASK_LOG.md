@@ -4,6 +4,315 @@ A running record of work done on this project, in plain language.
 
 ---
 
+## Deferred: one SSE connection per tab, not two
+
+**Date raised:** 2026-09-10
+**Status:** not started
+
+The friends system added `/api/me/stream`, which every signed-in tab holds open
+app-wide. A tab sitting in a room now holds two long-lived SSE connections —
+the room's and its own — and therefore two concurrent function invocations for
+as long as it's open.
+
+The Redis side of this was handled when it was built: all user channels share a
+single subscriber per server instance (deliberately unlike the per-room shape
+in `roomState.ts`, because user channels are one per signed-in tab rather than
+one per room, so a connection each would have put the Upstash concurrent-
+connection cap directly in the path of signing up). What was not handled is the
+invocation count, which simply doubled for anyone in a room.
+
+The fix is to multiplex rather than to optimise: let the room stream carry
+social events too when you're in a room, and have `SocialProvider` skip its own
+EventSource while a room stream is live. One connection per tab, always.
+
+Deferred on purpose. It couples two features that are currently independent —
+the room stream would need to know about friends — and the cost it saves is one
+this app has no evidence of paying yet. The 2026-08-23 infra note already names
+SSE-on-serverless as the ceiling here; this is worth doing when invocation
+counts say so, not before.
+
+---
+
+## Deferred: user search is an unindexed sequential scan
+
+**Date raised:** 2026-09-10
+**Status:** not started
+
+`searchUsers` in `lib/social.ts` matches display names with `ILIKE '%q%'`. A
+leading wildcard can't use a B-tree, so every search is a sequential scan of
+`users`. The username half of the same query is fine — it's a prefix match
+against the unique index — so this only bites on the name half.
+
+The fix is a `pg_trgm` GIN index on `users.name` (extension plus one index),
+which makes a substring match indexable.
+
+Deferred because it is invisible at this size and the shape of the search may
+change first — if search ever grows to rank on more than "starts with, then
+contains", the index wants designing alongside that rather than twice. Worth
+doing well before the user table is interesting, not now.
+
+---
+
+## Deferred: closing a tab no longer frees a seat immediately
+
+**Date raised:** 2026-09-10
+**Status:** open decision, not a defect
+
+Fixing "reloading a room removed you from it" meant the unload beacon posts to
+`/away` (drop presence) instead of `/leave` (resign membership), because
+`pagehide` cannot tell a reload from a close. The consequence: a genuinely
+closed tab now keeps its seat until the empty-room grace period expires
+(`EMPTY_ROOM_GRACE_MS`, 5 minutes) rather than freeing it at once.
+
+That only matters for a room at capacity — the 5th person waits up to five
+minutes for a seat someone abandoned. Rooms themselves are strictly more
+durable than before, not less, since the old path deleted a room the instant
+its last member's tab closed *or reloaded*.
+
+Getting both properties needs a short server-side grace: `/away` marks the tab
+gone, a reload beats the grace by re-announcing presence within a second or
+two, and a real close doesn't. Roughly 15s. Left undone because it trades a
+clear, explainable rule for a timing heuristic, and the seat-contention case it
+optimises has not actually come up.
+
+---
+
+## Monaco's AMD loader stopped Clerk from loading
+
+**Date:** 2026-09-10
+
+**Task:** Pre-existing bug, found alongside the reload bug above and initially
+mistaken for its cause. Also confirmed against a clean tree at `5a2c000`.
+
+**What it was:** Monaco's `loader.js` installs a global `define` carrying an
+`amd` marker. Clerk ships `clerk.browser.js` as a UMD bundle, which sniffs for
+exactly that marker and registers itself as an anonymous AMD module — and
+Monaco's loader only accepts an anonymous define while it is itself fetching a
+module. So the call throws "Can only have one anonymous define call per script
+file", Clerk's registration is swallowed, and clerk-js never initializes.
+
+The server never noticed, because every API route authenticates from the
+session cookie the browser sends regardless. The client did: `useAuth()` never
+resolved, `myUserId` stayed undefined, and the room quietly lost its host
+controls and showed nobody as present.
+
+A race, so it only bit on a fresh load of a room URL where Monaco won — most
+often a hard reload. Entering a room from the dashboard was unaffected,
+because Clerk had already loaded by then.
+
+**Fix:** `<Editor>` waits for Clerk before mounting, since mounting is what
+injects `loader.js` — so the two go in in the order that works. Monaco already
+guards the mirror image of this, declining to install at all if an AMD
+`define` already exists (`loader.js` ~line 1350), so the pair coexist happily
+in one order and not the other. A 5s timeout means a genuinely failing Clerk
+degrades to the previous behaviour rather than an editor that never appears.
+
+**Verified:** three consecutive hard reloads of a room, zero console errors.
+
+---
+
+## Reloading a room removed you from it
+
+**Date:** 2026-09-10
+
+**Task:** Pre-existing bug, found while screenshotting the friends work.
+Reloading `/room/[id]` left the room showing `0/4 in room` with the host
+controls gone; if you were in there alone, the room was destroyed outright.
+Confirmed pre-existing by stashing the friends branch and reproducing on a
+clean tree at `5a2c000`.
+
+**Initially misdiagnosed.** The blame first went to the Monaco/Clerk collision
+(see its own entry) because that threw a loud console error and produced a
+similar-looking screen. It wasn't the cause.
+
+**What it actually was:** the unload beacon in `hooks/useRoom.ts` POSTed to
+`/leave` on `pagehide`. `pagehide` cannot tell a close from a reload — it
+fires for both — so a refresh resigned your membership, and resigning the
+*last* membership sent `leaveRoom` on to delete the room out from under the
+very reload about to re-enter it. Proof, straight from the participants table
+after one refresh: `left_at` set on the only member.
+
+**Fix:** the beacon posts to a new `/api/rooms/[id]/away`, which drops
+presence and nothing else. That is what the beacon was ever for — everyone
+else sees you go dark immediately instead of waiting out the 50s presence
+window — while the seat, the turn queue and the room stay put. A tab that
+genuinely closed is retired by machinery that already existed: presence times
+out, and `getRoom`'s empty-room grace disbands the room if nobody returns. The
+Leave button still posts to `/leave` and still means Leave.
+
+**Verified:** three consecutive hard reloads of a room held alone — room
+intact each time, host controls present, `left_at` still null — and the Leave
+button still closes the room.
+
+**Behaviour change worth knowing about:** closing a tab no longer frees your
+seat instantly; it now takes the empty-room grace period. That was listed as a
+deliberate feature ("instant-leave-on-close") in the 2026-08-23 entry, so this
+is a real trade, made because destroying a room on refresh is the worse of the
+two. Tracked in its own Deferred entry.
+
+---
+
+## Room invite button stayed on "Sent" forever
+
+**Date:** 2026-09-10
+
+**Task:** Reported: after inviting a friend to a room, the button reads "Sent"
+permanently. Once they accept or decline, the host should be able to invite
+them again.
+
+**What was wrong:** the dropdown kept "have I invited this person" in its own
+local state — set on a successful send and never cleared. Nothing could clear
+it, because nothing told the sender their invite had been answered. All three
+ways an invite ends (accept, decline, and the failed-join fallback) funnel
+through `dismissInvite` → `DELETE /api/invites`, which removed the row from
+the receiver's hash and said nothing to anybody.
+
+Accepting was already half-handled by accident: joining puts them in the
+participant list, and the dropdown filters participants out entirely, so the
+row disappeared. But that broke down if they later left the room — the row
+came back still reading "Sent". Declining was never handled at all.
+
+**Fix:** `removeRoomInvite` now returns what it removed (the stored row is the
+only place the sender's id lives — an invite id alone says nothing about who
+sent it), and `DELETE /api/invites` publishes `invite_resolved` to that
+sender. Deliberately doesn't say *which way* it was answered: the button only
+needs to know it can be pressed again, and "they declined you" isn't something
+to put on a screen.
+
+The sender's state moved out of the dropdown and into `SocialProvider`
+alongside the rest of the realtime social state, keyed by `roomId:userId` —
+the pair, because the same friend can be invited to a different room later and
+the same room can have invites out to several people. It's page-load scoped
+rather than durable: it exists to keep one button honest, and an invite the
+sender can't see is one they'll just re-send.
+
+`removeRoomInvite` also drops the holder from the `room:{id}:inviteHolders`
+reverse index now, so `revokeRoomInvites` stops walking holders who no longer
+hold anything.
+
+**Verified end to end:** invited a friend (button → "✓ Sent"), had them
+decline through the real `DELETE /api/invites` path, watched the button flip
+back to "Invite" live with the dropdown still open and no reload, then
+re-sent successfully — with Redis showing exactly one outstanding invite and
+the reverse index repopulated.
+
+**Known gap, left alone:** an invite that simply expires on its 30-minute TTL
+sends no event, so a sender who has sat on the same page that long still sees
+a stale "Sent". Not worth a timer or a poll — the state dies with the page
+load, and the re-send would succeed anyway.
+
+---
+
+## Two efficiency/correctness fixes in the friends layer
+
+**Date:** 2026-09-10
+
+**Task:** Follow-up to the friends system, from reviewing my own code rather
+than from a reported problem. Both defects were mine.
+
+**1. Presence asked a global question to get a local answer.**
+`filterOnlineUsers` read the *entire* presence set — `ZRANGEBYSCORE cutoff
++inf` over the app-wide `presence:users` — and then discarded all but the
+handful of ids it was asked about, in JavaScript. Answering "are these 8
+friends online" transferred every online user in the application, so the cost
+scaled with total app usage rather than with the question. It runs on every
+friends-panel open, every `friends` event and every invite dropdown.
+
+Now `ZMSCORE presence:users <ids>` — cost proportional to what was asked.
+Verified against the real instance first (Upstash reports Redis 8.4.0; ZMSCORE
+needs 6.2+) rather than assumed.
+
+The prune moved with it. `ZREMRANGEBYSCORE` used to run on every *read*, which
+made looking at your friends list a write to a key every other reader was also
+writing. It now rides the pipeline already in `touchUserPresence`, so it costs
+no extra round trip. Safe because correctness no longer depends on it: the
+window is compared explicitly, so an unpruned stale entry reads as offline
+either way — checked directly against Redis, including that case.
+
+**2. `revokeRoomInvites` could never be called.** Invites are stored per
+recipient (`user:{id}:roomInvites`), which answers "what was Alice invited
+to?" but leaves "who holds an invite to this room?" unanswerable without
+scanning every user. I had papered over that with a `holderIds` parameter —
+but the only caller is room deletion, which knows the room's *participants*,
+and an invite holder is by definition someone who hasn't joined. The two sets
+are disjoint, so no caller could ever supply it. The function sat unreachable,
+with a comment claiming it was called from lib/rooms.ts, and the client half
+(`invite_revoked` and its handler in useSocial) was dead alongside it.
+
+Fixed by building the missing index rather than deleting the feature, because
+the client half was already written and because a card advertising a room that
+no longer exists is exactly the staleness the rest of this feature avoids:
+`putRoomInvite` now also records the recipient in `room:{id}:inviteHolders`
+(same round trip, same TTL), `revokeRoomInvites(roomId)` reads its own holder
+list, and `deleteRoom` calls it. Failures are reported and swallowed — it is
+cleanup hanging off the end of deleting a room, and every invite it might miss
+still expires on its TTL and still fails gracefully if clicked.
+
+**Verified end to end through the real paths, not simulations:** an invite
+card on the dashboard vanished the instant the room behind it was disbanded by
+an actual `/api/cron/sweep-rooms` run, with no reload, and Redis was left with
+no orphaned keys (holders set, invite hash and room keys all empty).
+
+---
+
+## Friends system: usernames, requests, and room invites
+
+**Date:** 2026-09-10
+
+**Task:** Replace "send a new link every time" with a real friends system —
+pick a username on first sign-in, find people by username, send/accept friend
+requests, and invite a friend straight into a room instead of copying a link.
+Requests and invites have to arrive without a reload.
+
+**What was built:**
+
+- **Usernames.** `users.username`, unique and nullable, stored already
+  lowercased so "Alice" and "alice" can't both be claimed. The rules live in
+  `lib/username.ts` with no runtime dependency, so the server and the input's
+  inline error can't disagree about what's allowed. A non-dismissible dialog
+  in the `(app)` group asks for one on arrival; `/settings` has the same
+  operation for changing it later.
+- **Friendships.** One `friendships` table holds both the request and the
+  friendship — same row, two points in its life. Declining *deletes* the row
+  rather than recording a "no", so a refusal doesn't permanently block the
+  sender from asking again. Two requests crossing in the post become a
+  friendship instead of a second pending row.
+- **Realtime.** A per-user SSE stream at `/api/me/stream`, modelled on the
+  room's, carrying friend events, presence and room invites. Its heartbeat
+  doubles as the global presence write, exactly as the room stream's does.
+- **Room invites.** Held in Redis with a 30-minute TTL rather than Postgres:
+  an invite is worth less than the ephemeral room it points at, and a hash
+  with a TTL cleans up after itself instead of needing its own sweep. The
+  invite carries the room's invite code, so accepting it is the *same*
+  `POST /api/rooms/join` a pasted link performs — one path into a room, so
+  capacity and leave-your-other-room are enforced in one place.
+- **UI.** "Add friend" sits above the profile row in the sidebar (with a
+  pending-request badge, because that badge is the only thing that makes an
+  incoming request visible from every page). The room's Invite button became a
+  dropdown: Copy link, or Add a friend with online friends listed first.
+  Invites land as cards on the dashboard above your room.
+
+**Two decisions worth knowing about:**
+
+1. **One shared Redis subscriber for all user channels**, rather than the
+   connection-per-room shape `roomState.ts` uses. Cardinality is the
+   difference: rooms are few and hold several people each, but user channels
+   are one per signed-in tab. A connection each would have put Upstash's
+   concurrent-connection cap — already flagged as this app's first real
+   ceiling — directly in the path of signing up.
+2. **Events are nudges, not patches.** Every `SocialEvent` except `invite`
+   just says "the list changed, go read it". A friend list is small and read
+   rarely, so a missed or out-of-order event costs nothing, where incremental
+   patching would let the two sides quietly drift apart.
+
+**One bug fixed along the way:** `isUniqueViolation` read `err.code` off the
+top-level error, but Drizzle wraps the driver error in a `DrizzleQueryError`
+and puts the real one on `.cause` — so every taken username was surfacing as a
+500 instead of "that one's gone". It now walks the cause chain, bounded so a
+cycle can't hang the request.
+
+---
+
 ## Infra check-in
 
 **Date:** 2026-08-23
@@ -2085,7 +2394,9 @@ fails on. Deleted; they come back on any sync, so `find .next -name "* [0-9].*"
 ## Deferred: one Redis subscriber per room instead of per tab
 
 **Date raised:** 2026-09-09
-**Status:** not started
+**Status:** done — shipped in "P1 from the review: indexes, rate limits,
+sanitising, shared subscribers" (see that entry). `subscribeRoomChannels` now
+shares one subscriber per room per instance with refcounted teardown.
 
 `subscribeRoomChannels` opens a Redis connection per browser tab, and with
 the SSE stream cut every 60s on Hobby, each tab opens a fresh one that often.

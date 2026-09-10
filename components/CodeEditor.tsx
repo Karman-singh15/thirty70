@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
+import { useAuth } from "@clerk/nextjs";
 import { Lock, Pencil, Play, Send, Users, WifiOff } from "lucide-react";
 // Imported for its side effect: repoints the Monaco loader at our own copy.
 // Must be in place before <Editor> below first mounts.
@@ -34,6 +35,53 @@ interface CodeEditorProps {
   onCloseJudge?: () => void;
 }
 
+// How long to wait for Clerk before mounting the editor anyway.
+//
+// The wait below exists to order two script loads (see useMonacoSafeToLoad),
+// not to gate on auth — so if Clerk never resolves, the right outcome is the
+// behaviour we had before the fix (a working editor in a room that can't tell
+// who you are), not an editor that never appears. Generous, because it should
+// only ever be reached when Clerk is genuinely failing.
+const CLERK_WAIT_TIMEOUT_MS = 5000;
+
+/**
+ * True once it's safe to mount <Editor>, which is what injects Monaco's AMD
+ * `loader.js`.
+ *
+ * That loader installs a global `define` carrying an `amd` marker. Clerk ships
+ * `clerk.browser.js` as a UMD bundle: it sniffs for exactly that marker and,
+ * finding it, registers itself as an anonymous AMD module. Monaco's loader
+ * accepts an anonymous define only while it is itself fetching a module, so
+ * the call throws — "Can only have one anonymous define call per script file"
+ * — Clerk's registration is swallowed, and clerk-js never initializes.
+ *
+ * The room survives that on the server (every API route authenticates from the
+ * session cookie, which the browser sends regardless) but not on the client:
+ * `useAuth()` never resolves, `myUserId` stays undefined, and the room quietly
+ * loses its host controls and shows nobody as present.
+ *
+ * Monaco's own loader guards the mirror image of this — it declines to install
+ * at all if an AMD `define` already exists (loader.js line ~1350) — so the two
+ * coexist happily in one order and not the other. This waits for that order:
+ * once Clerk has loaded, it has already made its one define call, and Monaco
+ * is free to take the global.
+ */
+function useMonacoSafeToLoad(): boolean {
+  const { isLoaded } = useAuth();
+  const [waitedLongEnough, setWaitedLongEnough] = useState(false);
+
+  useEffect(() => {
+    if (isLoaded) return;
+    const timer = setTimeout(
+      () => setWaitedLongEnough(true),
+      CLERK_WAIT_TIMEOUT_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [isLoaded]);
+
+  return isLoaded || waitedLongEnough;
+}
+
 const LANGUAGES = [
   { label: "JavaScript", value: "javascript" },
   { label: "Python", value: "python" },
@@ -63,6 +111,9 @@ export function CodeEditor({
   // those are Monaco's stock palettes and don't match the app's paper.
   const isDark = useResolvedTheme() === "dark";
   const monacoRef = useRef<Parameters<OnMount>[1] | null>(null);
+  // Gates the mount below — Monaco's AMD loader has to go in after Clerk's
+  // UMD bundle, or Clerk never loads. See useMonacoSafeToLoad.
+  const monacoSafeToLoad = useMonacoSafeToLoad();
 
   // Defined before the editor is created so the `theme` prop below resolves to
   // something Monaco already knows about.
@@ -173,26 +224,36 @@ export function CodeEditor({
         </div>
       </div>
       <div className="relative flex-1 overflow-hidden">
-        <Editor
-          height="100%"
-          beforeMount={handleBeforeMount}
-          language={language}
-          defaultValue=""
-          onMount={handleMount}
-          theme={MONACO_THEME}
-          options={{
-            minimap: { enabled: false },
-            fontSize: 14,
-            lineNumbers: "on",
-            scrollBeyondLastLine: false,
-            automaticLayout: true,
-            padding: { top: 12 },
-            // See lib/monacoTheme.ts: the default rainbow brackets were the
-            // one thing on screen picking its own colours.
-            bracketPairColorization: { enabled: false },
-            readOnly,
-          }}
-        />
+        {!monacoSafeToLoad ? (
+          // Monaco's own `loading` slot can't serve here: reaching it would
+          // mean <Editor> has already mounted, which is the thing being
+          // deferred. Same neutral surface, so there's no flash when the real
+          // editor takes over.
+          <div className="flex h-full items-center justify-center text-xs text-muted">
+            Loading editor…
+          </div>
+        ) : (
+          <Editor
+            height="100%"
+            beforeMount={handleBeforeMount}
+            language={language}
+            defaultValue=""
+            onMount={handleMount}
+            theme={MONACO_THEME}
+            options={{
+              minimap: { enabled: false },
+              fontSize: 14,
+              lineNumbers: "on",
+              scrollBeyondLastLine: false,
+              automaticLayout: true,
+              padding: { top: 12 },
+              // See lib/monacoTheme.ts: the default rainbow brackets were the
+              // one thing on screen picking its own colours.
+              bracketPairColorization: { enabled: false },
+              readOnly,
+            }}
+          />
+        )}
         {judgeState && onCloseJudge && (
           <JudgePanel state={judgeState} isSelf={isJudgeSelf} onClose={onCloseJudge} />
         )}
