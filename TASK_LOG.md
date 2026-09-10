@@ -2784,3 +2784,62 @@ build, plus the live measurements above.
 here that wants a second pair of eyes in a real two-person room before it
 ships, since a fan-out bug affects everyone in a room at once rather than one
 tab.
+
+---
+
+## P2 from the review: env validation, sync payload, and splitting the room page
+
+**Date:** 2026-09-10
+
+**1 — `lib/env.ts`.** `process.env.DATABASE_URL!` tells TypeScript the value is
+there and tells the runtime nothing; a missing variable surfaced as a driver
+error on the first query, layers from the cause. Now parsed once at import,
+failing with the variable's name and where to set it.
+
+Required vs optional is a real distinction here: `DATABASE_URL` and
+`REDIS_URL` are required, but billing and `CRON_SECRET` are deliberately
+optional — the app runs fine without Dodo configured, and the cron route
+already refuses with a 503 when unconfigured, which is a better failure than a
+deployment that won't boot because a background job isn't set up.
+
+**`NEXT_PUBLIC_*` variables are deliberately absent from it.** The bundler
+inlines those by matching the literal text `process.env.NEXT_PUBLIC_FOO`, so
+reading them through an indirection would leave client bundles with
+`undefined`. Client code keeps reading them directly; the comment at the top of
+the file says so.
+
+Nine tests, including the one that matters: unset a required variable and the
+import throws naming it.
+
+**2 — `lib/roomProblemPayload.ts`.** The last input path taking a client object
+on trust: `PATCH /sync` checked `if (!body.problem)` and wrote the rest to
+Postgres. Now validated field by field like the judge and editor routes.
+
+`titleSlug` gets a shape check (`^[a-z0-9]+(?:-[a-z0-9]+)*$`) rather than just
+a length cap, because it becomes both a primary key and a path segment every
+client interpolates into `/api/leetcode/problem/<slug>`. An unknown `language`
+now falls back to javascript rather than being written through — the language
+decides which LeetCode judge a Run/Submit goes to. 12 tests.
+
+**3 — `hooks/useRoom.ts`: the room page from 689 lines to 249.** Presence,
+WebRTC, shared editor, turn state, judging and problem selection all
+coordinated inside a component that also laid out four panes.
+
+Done as a *move*, not a rewrite — the same code in the same order, so the hook
+sequence React sees is unchanged — and the page destructures the hook's return
+with the same names, so the 159 lines of JSX are byte-for-byte identical. Only
+pane sizing stayed behind, since that's presentation.
+
+**Verified by actually using the room**, not just compiling it: created a room,
+searched and picked a problem, confirmed the problem body rendered (743 chars,
+so the P1 sanitiser is fine in situ), starter code loaded, the turn started,
+Run/Submit appeared, typed into Monaco and the edit stuck, no console errors.
+
+**A false alarm worth recording:** the first automated attempt to pick a
+problem left `roomProblem: null` and looked like a regression. It wasn't — the
+scripted click raced the search's 300ms debounce re-render. Clicking the
+settled button worked. Worth remembering before blaming a refactor for what
+the test harness did.
+
+**Verified:** 65/65 tests (was 45), clean `tsc --noEmit`, clean `eslint`,
+successful build, plus the manual room walkthrough above.
