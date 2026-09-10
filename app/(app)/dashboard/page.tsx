@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Users, Code2 } from "lucide-react";
 import { CreateRoomButton } from "@/components/CreateRoomButton";
 import { JoinRoomForm } from "@/components/JoinRoomForm";
+import { RoomInviteCards } from "@/components/social/RoomInviteCards";
 
 // You are in at most one room at a time — creating or joining one walks you
 // out of any other (see leaveOtherRooms in lib/rooms.ts). So this shows the
@@ -65,6 +66,10 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Above the room card: an invite is a decision waiting on you, and the
+          room you're already in isn't. Renders nothing when there are none. */}
+      <RoomInviteCards />
 
       {loading ? (
         <div className="h-[68px] animate-pulse rounded-xl border border-line bg-surface" />

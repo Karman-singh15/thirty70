@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { Settings, Swords, Users } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { AddFriendButton } from "@/components/social/AddFriendButton";
 
 // The sidebar is a 240px fixed rail. On a 390px phone that left ~120px for the
 // page, which is what turned every heading into one word per line. Below `md`
@@ -57,6 +58,9 @@ export function MobileNav() {
       </nav>
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
+        {/* Icon-only here — the rail's labelled button doesn't fit, but the
+            pending-request badge is the part that has to survive. */}
+        <AddFriendButton compact />
         <ThemeToggle />
         <Link
           href="/settings"

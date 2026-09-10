@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ArrowLeft, LogOut } from "lucide-react";
-import { InviteLink } from "@/components/InviteLink";
+import { InviteMenu } from "@/components/InviteMenu";
 import { ParticipantsList } from "@/components/ParticipantsList";
 import { MediaControls } from "@/components/MediaControls";
 import { Spinner } from "@/components/Spinner";
@@ -12,6 +12,7 @@ import type { ParticipantDisplay } from "@/lib/editorDoc";
 
 interface RoomHeaderProps {
   roomName: string;
+  roomId: string;
   inviteCode: string;
   participants: ParticipantDisplay[];
   onlineUserIds: string[];
@@ -30,6 +31,7 @@ interface RoomHeaderProps {
 
 export function RoomHeader({
   roomName,
+  roomId,
   inviteCode,
   participants,
   onlineUserIds,
@@ -99,7 +101,11 @@ export function RoomHeader({
             which meant leaving the room to change how the room looks. */}
         <ThemeToggle />
         <div className="h-6 w-px bg-line" />
-        <InviteLink inviteCode={inviteCode} />
+        <InviteMenu
+          roomId={roomId}
+          inviteCode={inviteCode}
+          participantIds={participants.map((p) => p.userId)}
+        />
         <div className="h-6 w-px bg-line" />
         <button
           onClick={askToLeave}

@@ -136,6 +136,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
       <RoomHeader
         roomName={room.name}
+        roomId={room.id}
         inviteCode={room.inviteCode}
         participants={room.participants}
         onlineUserIds={room.onlineUserIds}

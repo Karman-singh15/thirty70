@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { useClerk, useUser } from "@clerk/nextjs";
 import { LogOut, SquareArrowOutUpRight } from "lucide-react";
 import { PlanStatus } from "@/components/PlanStatus";
+import { UsernameSetting } from "@/components/social/UsernameSetting";
 
 export default function SettingsPage() {
   const { user, isLoaded } = useUser();
@@ -53,6 +54,13 @@ export default function SettingsPage() {
             <SquareArrowOutUpRight className="h-3.5 w-3.5" />
           </button>
         </div>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted">
+          Username
+        </h2>
+        <UsernameSetting />
       </section>
 
       <section className="mt-8">

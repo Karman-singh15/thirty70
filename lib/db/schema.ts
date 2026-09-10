@@ -16,6 +16,12 @@ export const userPlanEnum = pgEnum("user_plan", ["free", "pro"]);
 export const users = pgTable("users", {
   id: text("id").primaryKey(), // Clerk user id
   name: text("name").notNull(),
+  // The handle other people type to find you. Null until they pick one — a
+  // row is created the first time someone opens the app, before they've had
+  // the chance, and every existing row predates the column. Stored already
+  // lowercased (see lib/username.ts) so uniqueness is genuinely
+  // case-insensitive rather than "Alice" and "alice" both being free.
+  username: text("username").unique(),
   imageUrl: text("image_url"),
   plan: userPlanEnum("plan").notNull().default("free"),
   // Set once a Dodo customer/subscription exists for this user, so webhooks
@@ -134,9 +140,66 @@ export const turns = pgTable("turns", {
   index("turns_session_idx").on(t.sessionId),
 ]);
 
+// A friendship and a friend request are the same row at two points in its
+// life, so they share a table rather than living in two that have to be kept
+// consistent with each other. `requester`/`addressee` keep their meaning after
+// acceptance — that's who sent it — but once status is "accepted" the
+// direction stops mattering, which is why every friends query has to look at
+// both columns.
+//
+// Declined requests are deleted rather than kept as a row: keeping them would
+// mean the sender can never ask again, and "no" to a friend request is not
+// meant to be permanent.
+export const friendshipStatusEnum = pgEnum("friendship_status", [
+  "pending",
+  "accepted",
+]);
+
+export const friendships = pgTable(
+  "friendships",
+  {
+    requesterId: text("requester_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    addresseeId: text("addressee_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: friendshipStatusEnum("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+  },
+  (t) => [
+    // One row per ordered pair. The reverse pair is a distinct key, so the
+    // "we both sent each other a request" case has to be handled in code
+    // rather than by the constraint — see sendFriendRequest, which turns it
+    // into an acceptance instead of a second pending row.
+    primaryKey({ columns: [t.requesterId, t.addresseeId] }),
+    // The primary key only serves lookups that lead with requester_id, and
+    // half of every friendship question is asked from the other side:
+    // "who has asked to be my friend" and "who am I friends with" both scan
+    // addressee_id.
+    index("friendships_addressee_idx").on(t.addresseeId),
+  ]
+);
+
 export const usersRelations = relations(users, ({ many }) => ({
   ownedRooms: many(rooms),
   roomParticipants: many(roomParticipants),
+  sentFriendRequests: many(friendships, { relationName: "requester" }),
+  receivedFriendRequests: many(friendships, { relationName: "addressee" }),
+}));
+
+export const friendshipsRelations = relations(friendships, ({ one }) => ({
+  requester: one(users, {
+    fields: [friendships.requesterId],
+    references: [users.id],
+    relationName: "requester",
+  }),
+  addressee: one(users, {
+    fields: [friendships.addresseeId],
+    references: [users.id],
+    relationName: "addressee",
+  }),
 }));
 
 export const roomsRelations = relations(rooms, ({ one, many }) => ({

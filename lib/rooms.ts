@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { report } from "@/lib/log";
 import { problems, roomParticipants, rooms, sessions, turns, users } from "@/lib/db/schema";
 import * as roomState from "@/lib/roomState";
+import { revokeRoomInvites } from "@/lib/userState";
 import { getMaxParticipants, type UserPlan } from "@/lib/roomLimits";
 
 export interface Participant {
@@ -66,6 +67,10 @@ async function deleteRoom(roomId: string): Promise<void> {
   await broadcastRoomClosed(roomId);
   await db.delete(rooms).where(eq(rooms.id, roomId));
   await roomState.clearRoomState(roomId);
+  // Anyone still holding an invite to this room is holding a dead link — take
+  // the card off their dashboard now rather than letting them find out by
+  // clicking it. Self-contained and failure-tolerant; see revokeRoomInvites.
+  await revokeRoomInvites(roomId);
 }
 
 async function broadcastRoomClosed(roomId: string): Promise<void> {

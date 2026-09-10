@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
+import { SocialProvider } from "@/hooks/useSocial";
 import { Instrument_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -92,9 +93,14 @@ export default function RootLayout({
           >
             Skip to content
           </a>
-          <div id="main" className="contents">
-            {children}
-          </div>
+          {/* Mounted here rather than in the (app) group because /room/[id]
+              sits outside it and its invite dropdown reads the friends list.
+              No-ops entirely while signed out. */}
+          <SocialProvider>
+            <div id="main" className="contents">
+              {children}
+            </div>
+          </SocialProvider>
         </body>
       </html>
     </ClerkProvider>

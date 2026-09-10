@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { MobileNav } from "@/components/dashboard/MobileNav";
+import { UsernameDialog } from "@/components/social/UsernameDialog";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -17,6 +18,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Sidebar />
       </Suspense>
       <main className="min-w-0 flex-1">{children}</main>
+
+      {/* Only inside the app: the marketing pages and the sign-in flow have
+          no business asking for a handle. Renders nothing once one is set. */}
+      <UsernameDialog />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { useUser } from "@clerk/nextjs";
 import { Swords, Users, Settings, Crown, Loader2 } from "lucide-react";
 import { useBillingPlan } from "@/hooks/useBillingPlan";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { AddFriendButton } from "@/components/social/AddFriendButton";
 
 const NAV_ITEMS = [
   // Singular: a user is in at most one room at a time.
@@ -63,6 +64,13 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-auto border-t border-line p-3">
+        {/* Above the profile row, and above the upgrade prompt: this is the
+            only place an incoming friend request is visible from every page,
+            so it shouldn't sit below a button that disappears once you pay. */}
+        <div className="mb-2">
+          <AddFriendButton />
+        </div>
+
         {plan !== "pro" && (
           <button
             onClick={upgrade}
