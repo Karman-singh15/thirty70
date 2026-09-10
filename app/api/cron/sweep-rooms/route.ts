@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { listRoomIdsForSweep, sweepIfAbandoned } from "@/lib/rooms";
 import { getOnlineUserIds } from "@/lib/roomState";
 import { log, report } from "@/lib/log";
+import { env } from "@/lib/env";
 
 // Backstop for abandoned rooms.
 //
@@ -24,7 +25,7 @@ export async function GET(req: NextRequest) {
   // it isn't configured is the point — a misconfigured deployment should not
   // quietly leave a room-deleting endpoint open to the internet, and
   // proxy.ts has to let this path past Clerk for the cron to reach it at all.
-  const secret = process.env.CRON_SECRET;
+  const secret = env.CRON_SECRET;
   if (!secret) {
     return NextResponse.json({ error: "CRON_SECRET is not configured" }, { status: 503 });
   }

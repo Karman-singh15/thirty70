@@ -1,6 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { setRoomProblem } from "@/lib/rooms";
+import { parseProblemUpdate } from "@/lib/roomProblemPayload";
 
 // Picking the room's problem. The room's state used to be read back from here
 // too (a GET, polled every 700ms) — that's now pushed over /stream instead —
@@ -20,16 +21,18 @@ export async function PATCH(
   const { id } = await params;
   const body = await req.json();
 
-  if (!body.problem) {
-    return NextResponse.json({ error: "Invalid update" }, { status: 400 });
+  // Validated before anything is written — see lib/roomProblemPayload.ts.
+  const update = parseProblemUpdate(body);
+  if (!update) {
+    return NextResponse.json({ error: "Invalid problem selection" }, { status: 400 });
   }
 
   const room = await setRoomProblem(
     id,
     userId,
-    body.problem,
-    typeof body.code === "string" ? body.code : "",
-    body.language ?? "javascript"
+    update.problem,
+    update.starterCode,
+    update.starterLanguage
   );
   if (!room) {
     return NextResponse.json({ error: "Room not found or not the host" }, { status: 403 });

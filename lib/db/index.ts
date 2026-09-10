@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "./schema";
+import { env } from "@/lib/env";
 
 const globalForDb = globalThis as unknown as {
   pgClient?: ReturnType<typeof postgres>;
@@ -8,7 +9,7 @@ const globalForDb = globalThis as unknown as {
 
 // `prepare: false` is required for Neon's pooled (pgbouncer) connection string.
 const client =
-  globalForDb.pgClient ?? postgres(process.env.DATABASE_URL!, { prepare: false });
+  globalForDb.pgClient ?? postgres(env.DATABASE_URL, { prepare: false });
 
 if (process.env.NODE_ENV !== "production") {
   globalForDb.pgClient = client;

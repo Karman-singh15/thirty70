@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
 import { dodo } from "@/lib/dodo";
 import type { UserPlan } from "@/lib/roomLimits";
+import { env } from "@/lib/env";
 
 // Subscription statuses that mean "this user should have the pro plan right
 // now" — see SubscriptionStatus in dodopayments/resources/subscriptions.
@@ -22,7 +23,7 @@ export async function createUpgradeCheckout(
   email: string,
   name: string
 ): Promise<string> {
-  const productId = process.env.DODO_PAYMENTS_PRO_PRODUCT_ID;
+  const productId = env.DODO_PAYMENTS_PRO_PRODUCT_ID;
   if (!productId) {
     throw new Error("DODO_PAYMENTS_PRO_PRODUCT_ID is not configured");
   }
