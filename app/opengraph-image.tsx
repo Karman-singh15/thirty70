@@ -10,7 +10,7 @@ import { ImageResponse } from "next/og";
 // carrying a font file for one image isn't worth it when the fallback sets
 // this type perfectly well at display size.
 
-export const alt = "thirty70 — solve LeetCode problems together, in one room";
+export const alt = "LeetDuel — solve LeetCode problems together, in one room";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -54,10 +54,10 @@ export default function Image() {
               fontWeight: 700,
             }}
           >
-            7
+            L
           </div>
           <div style={{ fontSize: 30, fontWeight: 600, color: "#1b1b19" }}>
-            thirty70
+            LeetDuel
           </div>
         </div>
 

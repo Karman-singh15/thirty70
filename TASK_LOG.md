@@ -4,6 +4,77 @@ A running record of work done on this project, in plain language.
 
 ---
 
+## Renamed thirty70 to LeetDuel
+
+**Date:** 2026-09-10
+
+**Task:** Rename the app from thirty70 to LeetDuel — a deliberate choice,
+despite LeetCode's trademark sitting in the new name. That risk was raised and
+the user reaffirmed the name, so this covers the mechanics of getting it right
+everywhere without breaking anything.
+
+**Display text and the logo badge:** every user-facing "thirty70" became
+"LeetDuel" — the marketing page, sign-in/sign-up, the dashboard sidebar and
+mobile nav, `RoomBootLoader`, `Header`, the tab title, the OG image, privacy
+and terms, and the global error screen. The single-letter logo badge (a "7"
+square, for "thirty**70**") became an "L" square in all six places it appears,
+including the OG image's inline-styled version rendered through `next/og` —
+verified that one specifically, since satori has its own quirks (see the
+gradient note already in that file) and a build-time render is the one place a
+typo wouldn't show up until someone actually shared a link.
+
+**Internal identifiers**, invisible to users but renamed for consistency: the
+`MONACO_THEME` id in `lib/monacoTheme.ts`, the `CHANGE_EVENT` custom event
+namespace in `hooks/useTheme.ts`, and `package.json`'s `name` field (with
+`package-lock.json` hand-patched to match only those two fields — `npm install
+--package-lock-only` was tried first and rejected: it also re-resolved an
+unrelated wasm32-wasi optional-dependency block this npm version now expects
+but the previous lockfile didn't have, which is dependency drift that has
+nothing to do with a rename and doesn't belong in this commit).
+
+**The reserved-username list** in `lib/username.ts` swapped `"thirty70"` for
+`"leetduel"` — a handle matching the app's own name would read as a promise
+the URL doesn't keep, so the reservation moves with the brand.
+
+**The Chrome extension is the one place with real infrastructure risk**, not
+just text: `extension/manifest.json`'s `externally_connectable.matches` is a
+hardcoded production-origin allowlist, and Chrome silently refuses
+`chrome.runtime.connect` from anything not on it — no console error, the port
+just disconnects. Renaming that string without the deployment actually moving
+would have quietly broken Run/Submit in production, so this was confirmed with
+the user first rather than assumed: the domain is moving to `leetduel.in`, so
+`https://thirty70.vercel.app/*` became `https://leetduel.in/*`, and
+`app/layout.tsx`'s `NEXT_PUBLIC_APP_URL` fallback moved with it.
+
+The manifest's `"key"` field was deliberately **not** touched — it's what
+fixes the extension's id at `fogjpncajmojaednlndljobmielkjjdk` for every
+installed copy, and regenerating it would silently break
+`NEXT_PUBLIC_LEETCODE_EXTENSION_ID` for everyone who already has the extension
+installed. Confirmed unchanged after editing.
+
+**Left alone on purpose:** this log's own history. Past entries said
+"thirty70" because that was the app's name when they were written; rewriting
+them to say "LeetDuel" would misrepresent what was true at the time. Only new
+entries, this one included, use the new name.
+
+**Verified beyond typecheck/lint/test/build:** the actual pages, not just that
+they compiled — the dashboard sidebar and browser tab title, the sign-in
+page's logo, and a real render of `/opengraph-image` showing the "L" badge and
+"LeetDuel" at build-time-generated size. A final repo-wide grep for
+`thirty70`/`Thirty70` outside `TASK_LOG.md` and `package-lock.json`'s history
+turned up nothing.
+
+**Left for the user to do, since it's outside the repo:** actually add
+`leetduel.in` in the Vercel project (Environment Variables → set
+`NEXT_PUBLIC_APP_URL=https://leetduel.in`, plus the domain itself), point DNS
+at it, and redeploy. Until that happens, the manifest's allowed origin points
+at a domain that isn't live yet — publishing the extension update before the
+domain migration completes would break Run/Submit rather than fix anything.
+Same `NEXT_PUBLIC_LEETCODE_EXTENSION_ID` re-deploy caveat the extension's own
+README already documents for any domain change applies here too.
+
+---
+
 ## Deferred: one SSE connection per tab, not two
 
 **Date raised:** 2026-09-10

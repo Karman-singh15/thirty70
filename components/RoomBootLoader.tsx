@@ -64,10 +64,10 @@ export function RoomBootLoader({
       <div className="relative w-full max-w-sm">
         <div className="flex items-center gap-2 border-b border-line pb-3">
           <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-[11px] font-bold text-on-accent">
-            7
+            L
           </span>
           <span className="text-sm font-semibold tracking-tight text-ink">
-            thirty70
+            LeetDuel
           </span>
           <span className="ml-auto text-xs tabular-nums text-faint">
             {formatElapsed(elapsed)}

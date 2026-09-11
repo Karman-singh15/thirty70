@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 export const metadata = {
-  title: "Privacy — thirty70",
+  title: "Privacy — LeetDuel",
 };
 
 export default function PrivacyPage() {

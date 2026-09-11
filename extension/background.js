@@ -1,5 +1,5 @@
-// Bridges thirty70 (an externally_connectable web page) to a hidden LeetCode
-// tab. thirty70 never sees a LeetCode cookie or session token — the content
+// Bridges LeetDuel (an externally_connectable web page) to a hidden LeetCode
+// tab. LeetDuel never sees a LeetCode cookie or session token — the content
 // script in content-scripts/leetcode.js makes same-origin requests from
 // inside leetcode.com itself, so the browser attaches the user's own
 // LeetCode session automatically.

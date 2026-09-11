@@ -12,7 +12,7 @@ export type ThemePreference = "light" | "dark" | "system";
 const STORAGE_KEY = "theme";
 // Same-tab updates: the `storage` event only fires in *other* tabs, so a click
 // on the toggle wouldn't notify the hook in the tab that made it.
-const CHANGE_EVENT = "thirty70:themechange";
+const CHANGE_EVENT = "leetduel:themechange";
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 function readPreference(): ThemePreference {

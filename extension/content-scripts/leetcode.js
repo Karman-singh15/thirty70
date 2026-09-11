@@ -1,7 +1,7 @@
 // Runs inside a hidden leetcode.com tab the background worker opened. Calls
 // LeetCode's own (undocumented) run/submit endpoints as same-origin requests,
 // so the browser attaches the user's existing LEETCODE_SESSION cookie —
-// nothing sensitive is ever read out or sent to thirty70's servers.
+// nothing sensitive is ever read out or sent to LeetDuel's servers.
 
 const POLL_INTERVAL_MS = 1000;
 const POLL_MAX_ATTEMPTS = 30;

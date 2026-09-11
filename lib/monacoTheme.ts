@@ -11,7 +11,7 @@ import type { OnMount } from "@monaco-editor/react";
 // variables at runtime*. One source of truth, and it follows any future
 // palette edit for free.
 
-export const MONACO_THEME = "thirty70";
+export const MONACO_THEME = "leetduel";
 
 /** Monaco wants `RRGGBB`; the tokens are already `#rrggbb`. */
 function token(name: string, fallback: string): string {

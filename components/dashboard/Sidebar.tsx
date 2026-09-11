@@ -29,10 +29,10 @@ export function Sidebar() {
         className="flex items-center gap-2 px-5 py-5 text-ink"
       >
         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm font-bold text-on-accent">
-          7
+          L
         </span>
         <span className="text-base font-semibold tracking-tight">
-          thirty70
+          LeetDuel
         </span>
       </Link>
 

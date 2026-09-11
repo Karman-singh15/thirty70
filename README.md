@@ -1,4 +1,4 @@
-# thirty70 — collaborative LeetCode
+# LeetDuel — collaborative LeetCode
 
 Solve LeetCode problems together, one keyboard at a time. A room holds a
 shared Monaco editor, a rotating turn timer, and everyone's mic and camera —

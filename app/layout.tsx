@@ -17,7 +17,7 @@ const instrumentSans = Instrument_Sans({
   subsets: ["latin"],
 });
 
-const title = "thirty70 — Collaborative LeetCode";
+const title = "LeetDuel — Collaborative LeetCode";
 const description =
   "Solve LeetCode problems together with friends in real-time.";
 
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   // origin to be made absolute against — Next warns at build time and social
   // scrapers, which don't resolve relative image URLs, drop the card.
   metadataBase: new URL(
-    process.env.NEXT_PUBLIC_APP_URL ?? "https://thirty70.vercel.app"
+    process.env.NEXT_PUBLIC_APP_URL ?? "https://leetduel.in"
   ),
   title,
   description,

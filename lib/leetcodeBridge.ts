@@ -1,4 +1,4 @@
-// Talks to the "thirty70 LeetCode Bridge" browser extension (see /extension)
+// Talks to the "LeetDuel LeetCode Bridge" browser extension (see /extension)
 // over chrome.runtime.connect. The extension does the actual work in a
 // hidden LeetCode tab using the user's own logged-in session — this module
 // never sees a LeetCode cookie or credential, it only relays a code payload
@@ -102,7 +102,7 @@ export function runOnLeetCode(
   if (!chromeRuntime?.connect) {
     return Promise.reject(
       new LeetCodeExtensionError(
-        "Install the thirty70 LeetCode extension to use Run/Submit — see extension/README.md."
+        "Install the LeetDuel LeetCode extension to use Run/Submit — see extension/README.md."
       )
     );
   }
@@ -112,7 +112,7 @@ export function runOnLeetCode(
     try {
       port = chromeRuntime.connect(extensionId);
     } catch {
-      reject(new LeetCodeExtensionError("Couldn't reach the thirty70 LeetCode extension."));
+      reject(new LeetCodeExtensionError("Couldn't reach the LeetDuel LeetCode extension."));
       return;
     }
 
@@ -124,7 +124,7 @@ export function runOnLeetCode(
       reject(
         new LeetCodeExtensionError(
           chromeRuntime.lastError?.message ??
-            "Lost the connection to the thirty70 LeetCode extension."
+            "Lost the connection to the LeetDuel LeetCode extension."
         )
       );
     });

@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "thirty70 LeetCode Bridge",
+  "name": "LeetDuel LeetCode Bridge",
   "version": "1.0.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp7pvGm9F7Gp9z4WDX1LDcjV479w2n7YbKsydprXMPEARQzaKg9DBjF7ZLpsievP0oktfG4srpF8VsclLpmTwDY2thHURrAOQcJlXXcEdiFaUu+Lqh5rLJ26+zu9Ues4YEOrXgQ6Cs0ffAk/U+aAQ8OWiw7UgYTALcx6vKhvxDayxbrI98ahBo+u+9n1RhYV6H5qSq5NUuetJuH23hGd+rz1VRH7z2aA8OVT+vYlQnmV/qdSVtx7yU1T2zK1eYypGesw/oJsHr+D6Ok3LR9Btx3t75PpR63eeeZHqLLMHva1rMkwt9lvmLv61IdeYpq/HppPUEdtmAy47CAC1kFJQGwIDAQAB",
-  "description": "Runs and submits thirty70 room code against your own logged-in LeetCode account, without leaving thirty70.",
+  "description": "Runs and submits LeetDuel room code against your own logged-in LeetCode account, without leaving LeetDuel.",
   "permissions": ["tabs"],
   "host_permissions": ["https://leetcode.com/*"],
   "background": {
@@ -20,7 +20,7 @@
   "externally_connectable": {
     "matches": [
       "http://localhost:3000/*",
-      "https://thirty70.vercel.app/*"
+      "https://leetduel.in/*"
     ]
   }
 }

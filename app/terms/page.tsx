@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 export const metadata = {
-  title: "Terms — thirty70",
+  title: "Terms — LeetDuel",
 };
 
 export default function TermsPage() {
@@ -23,7 +23,7 @@ export default function TermsPage() {
           <section>
             <h2 className="font-mono text-base font-medium text-ink">The service</h2>
             <p className="mt-2">
-              thirty70 lets you create shared rooms to work through LeetCode
+              LeetDuel lets you create shared rooms to work through LeetCode
               problems with other people in real time. Free rooms hold up to
               4 participants; Pro rooms hold up to 8.
             </p>

@@ -30,7 +30,7 @@ const RESERVED = new Set([
   "signup",
   "support",
   "terms",
-  "thirty70",
+  "leetduel",
 ]);
 
 /**

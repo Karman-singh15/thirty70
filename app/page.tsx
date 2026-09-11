@@ -22,9 +22,9 @@ export default function HomePage() {
       <nav className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-5">
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm font-bold text-on-accent">
-            7
+            L
           </span>
-          <span className="text-lg font-semibold tracking-tight">thirty70</span>
+          <span className="text-lg font-semibold tracking-tight">LeetDuel</span>
         </div>
         <div className="flex items-center gap-2">
           <ThemeToggle className="mr-1" />
@@ -154,7 +154,7 @@ export default function HomePage() {
 
       <footer className="border-t border-line px-6 py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 text-xs text-muted sm:flex-row">
-          <span>© 2026 thirty70</span>
+          <span>© 2026 LeetDuel</span>
           <div className="flex items-center gap-5">
             <Link href="/privacy" className="hover:text-ink-soft">
               Privacy

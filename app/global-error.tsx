@@ -45,7 +45,7 @@ export default function GlobalError({
         }}
       >
         <h1 style={{ margin: 0, fontSize: "22px", letterSpacing: "-0.02em" }}>
-          thirty70 failed to load
+          LeetDuel failed to load
         </h1>
         <p style={{ margin: 0, maxWidth: "34ch", fontSize: "14px", color: "#83837a", lineHeight: 1.6 }}>
           Something went wrong before the app could start. Reloading usually

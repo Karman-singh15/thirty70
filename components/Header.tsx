@@ -9,7 +9,7 @@ export function Header() {
     <header className="flex items-center justify-between border-b border-line bg-canvas px-6 py-3">
       <Link href="/dashboard" className="flex items-center gap-2 text-ink">
         <Code2 className="h-6 w-6 text-accent" />
-        <span className="text-lg font-semibold tracking-tight">Thirty70</span>
+        <span className="text-lg font-semibold tracking-tight">LeetDuel</span>
       </Link>
       <UserButton />
     </header>
