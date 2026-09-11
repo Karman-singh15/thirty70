@@ -3328,3 +3328,38 @@ with the still sprite at 28/56/120px, so the swap doesn't jump; and two
 captures a moment apart show different frames, so the loop is actually running.
 Plus clean `tsc --noEmit`, clean `eslint`, successful build, and the two satori
 outputs re-checked on the new dark tile.
+
+---
+
+## The tab icon was still create-next-app's
+
+The favicon in the browser tab was a black circle with a white triangle — the
+default `app/favicon.ico` from `create-next-app`, untouched since the repo was
+scaffolded. It was never the frog, and the reason it wasn't is worth recording:
+`app/icon.tsx` *was* generating a frog, but `favicon.ico` is a separate file
+convention that emits its own `<link rel="icon">`, and browsers were picking the
+`.ico`. Adding `icon.tsx` had quietly done nothing to the tab.
+
+Now:
+
+- **`app/icon.svg`** — the sprite as a flat `.svg`. Next's `icon` convention
+  takes `.svg` directly and emits `sizes="any"`, which modern browsers prefer
+  over a fixed-size `.ico`.
+- **`app/favicon.ico`** — regenerated as the same frog at 16/32/48/64/128/256,
+  rasterised *from the same path strings* rather than drawn again, so the two
+  files cannot disagree. Kept as the fallback for anything that ignores the SVG.
+- **`app/icon.tsx` deleted.** It can't coexist with `icon.svg` (same convention),
+  and a satori-rendered PNG is strictly worse than a real vector here.
+- **`public/logo.svg` deleted.** Nothing referenced it and `app/icon.svg` is now
+  the canonical static copy; two identical files would only drift.
+
+**Both icons are pinned to the light tile**, unlike the in-app mark, which flips
+with the theme. A favicon sits on browser chrome — usually dark, and not
+readable from the page — so it can't adapt and has to pick the side that
+survives both. Cream does; the near-black tile would have vanished into a dark
+tab strip, which is the same mistake in the other direction.
+
+**Verified:** the emitted head is `<link rel="icon" href="/icon.svg…"
+sizes="any" type="image/svg+xml">` plus the `.ico`, both 200; the `.ico` was
+rendered at every embedded size against dark chrome to confirm it reads at
+16px. Clean `tsc --noEmit`, clean `eslint`, successful build.
