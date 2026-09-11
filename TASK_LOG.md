@@ -3363,3 +3363,47 @@ tab strip, which is the same mistake in the other direction.
 sizes="any" type="image/svg+xml">` plus the `.ico`, both 200; the `.ico` was
 rendered at every embedded size against dark chrome to confirm it reads at
 16px. Clean `tsc --noEmit`, clean `eslint`, successful build.
+
+---
+
+## The extension stopped connecting on the deployed site
+
+Run/Submit on `thirty70.vercel.app` reported "Install the LeetDuel LeetCode
+extension…" even for people who had it installed and loaded. Locally it was
+fine, which made it look flaky rather than broken.
+
+It wasn't flaky. The rename commit (`56193d5`) rewrote the extension's
+`externally_connectable.matches` from `https://thirty70.vercel.app/*` to
+`https://leetduel.in/*` along with every other cosmetic mention of the old
+name — but `leetduel.in` has no DNS records yet and the site is still served
+from the Vercel domain. That list is the allowlist Chrome consults before
+injecting `chrome.runtime` into a page at all, so on production
+`window.chrome?.runtime` was simply `undefined`, and `runOnLeetCode` rejected
+at its "is the extension installed" guard without ever opening a port. That
+guard can't tell "not installed" from "installed but this origin isn't
+allowed" — both look identical from the page — which is why the message was
+misleading.
+
+`http://localhost:3000/*` was never removed, hence the local/production split.
+
+**The fix is additive:** `https://thirty70.vercel.app/*` goes back into the
+list *alongside* `https://leetduel.in/*` rather than replacing it. The new
+domain entry costs nothing while it's dark and means the extension keeps
+working through the cutover instead of needing a second reload from every
+user on the day DNS flips. The README's origin list now says which of the two
+is live and which is reserved, so the next person to read it doesn't "tidy up"
+the one that's actually load-bearing.
+
+**Existing installs need a manual reload** at `chrome://extensions` —
+`externally_connectable` is read at load time and Chrome doesn't hot-reload
+unpacked extensions.
+
+**Verified:** `dig +short leetduel.in A` returns nothing and `curl` to it fails
+to connect, while `https://thirty70.vercel.app/` returns 200; `manifest.json`
+still parses as JSON after the edit.
+
+**Noted, not fixed:** `waitForTabComplete` in `background.js` attaches its
+`tabs.onUpdated` listener *after* `tabs.create` resolves. If the LeetCode tab
+were ever to reach `complete` in that gap the listener would never fire and the
+job would fail on the 20s timeout instead. It's a narrow race and not what
+caused this, so it's left alone rather than folded into an unrelated fix.

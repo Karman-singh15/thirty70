@@ -20,6 +20,7 @@
   "externally_connectable": {
     "matches": [
       "http://localhost:3000/*",
+      "https://thirty70.vercel.app/*",
       "https://leetduel.in/*"
     ]
   }

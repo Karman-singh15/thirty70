@@ -46,7 +46,9 @@ to work — the extension rides your existing session, it doesn't create one.
 ## Deploying to a new domain
 
 `manifest.json`'s `externally_connectable.matches` is a hardcoded allowlist —
-`http://localhost:3000/*` and `https://leetduel.in/*` right now.
+`http://localhost:3000/*`, `https://thirty70.vercel.app/*` (where the site is
+served today) and `https://leetduel.in/*` (reserved for when that domain is
+pointed at the deployment; it does not resolve yet) right now.
 Chrome silently refuses `chrome.runtime.connect` from any origin not listed
 there (no console error on LeetDuel's side, no visible failure in the
 extension — the port just disconnects immediately), so a custom domain or a
