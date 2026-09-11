@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { Swords, Users, Settings, Crown, Loader2 } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import { useBillingPlan } from "@/hooks/useBillingPlan";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { AddFriendButton } from "@/components/social/AddFriendButton";
@@ -28,9 +29,7 @@ export function Sidebar() {
         href="/dashboard"
         className="flex items-center gap-2 px-5 py-5 text-ink"
       >
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm font-bold text-on-accent">
-          L
-        </span>
+        <Logo size={28} animated />
         <span className="text-base font-semibold tracking-tight">
           LeetDuel
         </span>

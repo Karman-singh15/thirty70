@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { SignInButton, SignUpButton, useAuth } from "@clerk/nextjs";
 import { ArrowRight, GitBranch, Swords, Timer } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
@@ -21,9 +22,7 @@ export default function HomePage() {
     <div className="flex min-h-dvh flex-col bg-canvas text-ink">
       <nav className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-5">
         <div className="flex items-center gap-2">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm font-bold text-on-accent">
-            L
-          </span>
+          <Logo size={28} animated />
           <span className="text-lg font-semibold tracking-tight">LeetDuel</span>
         </div>
         <div className="flex items-center gap-2">

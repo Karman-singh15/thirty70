@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Logo } from "@/components/Logo";
 
 // The full-screen wait shown while a room is being created and again while it
 // is being connected to. Both moments used to be nearly invisible — a 16px
@@ -63,9 +64,7 @@ export function RoomBootLoader({
 
       <div className="relative w-full max-w-sm">
         <div className="flex items-center gap-2 border-b border-line pb-3">
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-[11px] font-bold text-on-accent">
-            L
-          </span>
+          <Logo size={24} animated />
           <span className="text-sm font-semibold tracking-tight text-ink">
             LeetDuel
           </span>

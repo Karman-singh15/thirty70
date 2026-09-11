@@ -17,7 +17,7 @@ everywhere without breaking anything.
 "LeetDuel" — the marketing page, sign-in/sign-up, the dashboard sidebar and
 mobile nav, `RoomBootLoader`, `Header`, the tab title, the OG image, privacy
 and terms, and the global error screen. The single-letter logo badge (a "7"
-square, for "thirty**70**") became an "L" square in all six places it appears,
+square, for "thirty**70**") became an "Ld" square in all six places it appears,
 including the OG image's inline-styled version rendered through `next/og` —
 verified that one specifically, since satori has its own quirks (see the
 gradient note already in that file) and a build-time render is the one place a
@@ -59,7 +59,7 @@ entries, this one included, use the new name.
 
 **Verified beyond typecheck/lint/test/build:** the actual pages, not just that
 they compiled — the dashboard sidebar and browser tab title, the sign-in
-page's logo, and a real render of `/opengraph-image` showing the "L" badge and
+page's logo, and a real render of `/opengraph-image` showing the "Ld" badge and
 "LeetDuel" at build-time-generated size. A final repo-wide grep for
 `thirty70`/`Thirty70` outside `TASK_LOG.md` and `package-lock.json`'s history
 turned up nothing.
@@ -3225,3 +3225,106 @@ the test harness did.
 
 **Verified:** 65/65 tests (was 45), clean `tsc --noEmit`, clean `eslint`,
 successful build, plus the manual room walkthrough above.
+
+---
+
+## Pixel-frog logo
+
+Replaced the abstract two-people mark with the pixel-art frog-at-a-laptop from
+the reference image, traced into a real SVG rather than embedded as a raster.
+
+**Tracing.** The source PNG is 1084×734 of blurry, AI-generated "pixel art" —
+its pixel grid wobbles, so a naive downsample smeared every outline. The grid
+was recovered by anchoring on the two cheek pixels, which are the only isolated
+single-cell colour in the image: they sit at x=336 and x=652, twelve cells
+apart, giving a cell size of 26.33px and a hard offset to align to. Each cell
+was then resolved by snapping every pixel inside it to a nine-colour palette and
+taking the mode, with the cell's outer 22% ignored so anti-aliased edges don't
+vote. That produced a clean 36×21 grid; four cells were fixed by hand
+(a missing outline on the head's right edge, one on the hind leg, a
+grey-vs-green misread at the chin, and the bottom outline, which the source's
+drop shadow had punched holes in).
+
+**Encoding.** One `<path>` per palette colour, not ~750 `<rect>`s. Same-coloured
+pixels are merged greedily into maximal rectangles (149 of them), each written
+as an `M x y h w v h h -w z` subpath — about 2KB of path data across nine
+elements. Node count matters here because `Logo` is rendered through satori at
+build time by both `app/icon.tsx` and `app/opengraph-image.tsx`.
+
+**Theming.** The old mark took `fg`/`accent` so its line art could invert with
+the theme; an illustration can't do that — a green frog that turns cream in dark
+mode is a different frog. The palette is now fixed and the only prop left is
+`bg`, the rounded tile, which defaults to warm paper in *both* themes so the
+frog's near-black outline never dissolves into the dark canvas (#141311). All
+seven callsites dropped to `<Logo size={n} />`.
+
+All sprite coordinates are integers and the group translate is whole-number
+(`translate(2 10)`); anything fractional shows as hairline seams between
+neighbouring pixels once a renderer anti-aliases. The outer viewBox does the
+scaling. Also written standalone to `public/logo.svg`.
+
+**Verified:** clean `tsc --noEmit`, successful build, and the two satori
+outputs pulled out of `.next` and inspected — the 32×32 favicon and the 1200×630
+OG card both render the frog correctly.
+
+---
+
+## Logo: inverted tile, and a typing loop on hover
+
+Two changes to the frog mark.
+
+**The tile now flips with the theme.** `bg` defaults to `var(--accent)` — ink
+on paper — so it is near-black in light mode and cream in dark. The default is
+a CSS variable because six of the eight callsites are live pages that want
+exactly that; `app/icon.tsx` and `app/opengraph-image.tsx` render through
+satori, which has no DOM and cannot resolve `var()`, so those two pass a
+literal `#1b1b19` instead.
+
+*The frog's own palette was left alone.* Inverting its outline to keep
+definition on the dark tile was tried and rejected: the sprite's outline is
+heavy enough that going light turns it into a halo around the art rather than a
+line inside it. Left dark it simply melts into the dark tile and the frog reads
+as a clean silhouette — the better of the two, and it means one hover GIF
+serves both themes instead of one per theme.
+
+**Hover plays the animation.** Source was a 480×270, 128-frame, **7.6MB** GIF.
+Shipped is 80×80, 82 frames, **47KB** — a 160× reduction, and it is a better
+loop than the original.
+
+The work:
+
+- *Segment.* The source is three acts — frog alone, frog at a grey laptop, frog
+  at a bright blue laptop — joined by messy transitions. Only frames 16–64 are
+  the grey laptop that matches the still logo. Frames 0 and 43 of that window
+  jump hard (71 and 63 changed cells against ~10 for a normal step), so the
+  usable window is 42 frames.
+- *The zoom.* That segment is a slow continuous push-in, not a cycle: the
+  content bbox grows from 341×187 to 374×206, and no frame ever returns near
+  the first — the best candidate seam still differed by 105 of 798 cells. Fixed
+  by normalising rather than by hunting for a loop point: each frame is cropped
+  to a *linear fit* of its own bbox (the fit rather than the raw bbox, so
+  per-frame jitter doesn't add shake) and resampled to a fixed 38×21 grid. The
+  push-in disappears and only the typing is left.
+- *The seam.* Even normalised it doesn't cycle, so it ping-pongs — 42 forward,
+  40 back. Seamless at both ends by construction, and it is why the loop can be
+  a frog already mid-type: there is no frame it is wrong to come in on, which
+  matters because CSS cannot restart a GIF on hover.
+- *Resampling.* Same mode-of-snapped-pixels vote as the still, not averaging.
+  `Image.BOX` averaged ink against paper at every edge and left a grey fringe
+  outlining the whole frog.
+- *Transparency.* Palette index 0 is the source's paper, written as the GIF's
+  transparent colour, so the one file sits on either tile.
+
+`.logo-mark` in globals.css cross-fades the two. The GIF is a
+`background-image`, not an `<img>`: it is decorative, and `cover` sizes it to
+the box without the sprite landing on a half pixel. No `image-rendering:
+pixelated` — at 24–28px the 80px GIF is always scaling *down*, where
+`pixelated` produces aliased mush rather than sharpness.
+`prefers-reduced-motion` drops the loop entirely and keeps the still frog.
+
+**Verified in the browser, both themes:** light mode paints the tile
+`rgb(27,27,25)` and dark `rgb(237,235,227)`; the hover GIF's framing lines up
+with the still sprite at 28/56/120px, so the swap doesn't jump; and two
+captures a moment apart show different frames, so the loop is actually running.
+Plus clean `tsc --noEmit`, clean `eslint`, successful build, and the two satori
+outputs re-checked on the new dark tile.

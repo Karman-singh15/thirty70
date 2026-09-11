@@ -1,4 +1,5 @@
 import { ImageResponse } from "next/og";
+import { Logo } from "@/components/Logo";
 
 // A link to this app shared anywhere — Discord, iMessage, a tweet — rendered
 // as a bare title and URL, because nothing ever set og:image. This is the
@@ -40,22 +41,7 @@ export default function Image() {
       >
 
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 52,
-              height: 52,
-              borderRadius: 12,
-              background: "#1b1b19",
-              color: "#fbfbf9",
-              fontSize: 30,
-              fontWeight: 700,
-            }}
-          >
-            L
-          </div>
+          <Logo size={52} bg="#1b1b19" />
           <div style={{ fontSize: 30, fontWeight: 600, color: "#1b1b19" }}>
             LeetDuel
           </div>
